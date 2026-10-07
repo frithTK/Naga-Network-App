@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -530,7 +531,7 @@ func ApplyTrafficMode(config []byte, mode policy.TrafficMode) ([]byte, error) {
 			}
 		}
 		removeUnconditionalQUICReject(document)
-		ensureLoopbackProxyInbound(document)
+		EnsureLoopbackProxyInbound(document)
 		return json.MarshalIndent(document, "", "  ")
 	}
 	document, err := decodeConfig(config)
@@ -585,11 +586,11 @@ func ApplyTrafficMode(config []byte, mode policy.TrafficMode) ([]byte, error) {
 	return json.MarshalIndent(document, "", "  ")
 }
 
-// ensureLoopbackProxyInbound keeps a loopback mixed inbound next to TUN so
+// EnsureLoopbackProxyInbound keeps a loopback mixed inbound next to TUN so
 // naga-control can refresh a subscription through the running tunnel. The
 // provider can block the subscription host on the physical network; traffic
 // that enters sing-box on 127.0.0.1 leaves via the selected outbound.
-func ensureLoopbackProxyInbound(document map[string]any) {
+func EnsureLoopbackProxyInbound(document map[string]any) {
 	rawInbounds, _ := document["inbounds"].([]any)
 	for _, raw := range rawInbounds {
 		inbound, ok := raw.(map[string]any)
@@ -724,22 +725,24 @@ func ApplyRoutingPolicy(config []byte, routing policy.RoutingPolicy) ([]byte, er
 	}
 
 	appRules := make([]any, 0, len(routing.Apps))
-	for _, app := range routing.Apps {
-		if !app.Enabled || strings.TrimSpace(app.PackageOrProcessID) == "" {
-			continue
+	if writeAppProcessRules {
+		for _, app := range routing.Apps {
+			if !app.Enabled || strings.TrimSpace(app.PackageOrProcessID) == "" {
+				continue
+			}
+			key := processMatchKey(app.PackageOrProcessID)
+			target := vpnFinal
+			if app.Route == "direct" {
+				target = direct
+			}
+			if target == "" {
+				continue
+			}
+			appRules = append(appRules, map[string]any{
+				key:        []any{app.PackageOrProcessID},
+				"outbound": target,
+			})
 		}
-		key := processMatchKey(app.PackageOrProcessID)
-		target := vpnFinal
-		if app.Route == "direct" {
-			target = direct
-		}
-		if target == "" {
-			continue
-		}
-		appRules = append(appRules, map[string]any{
-			key:        []any{app.PackageOrProcessID},
-			"outbound": target,
-		})
 	}
 	builtin := builtinDirectRules(routing, direct)
 	oldRules, _ := route["rules"].([]any)
@@ -754,7 +757,10 @@ func ApplyRoutingPolicy(config []byte, routing policy.RoutingPolicy) ([]byte, er
 	return result, nil
 }
 
-var builtinRUSuffixes = []any{".ru", ".su", ".xn--p1ai"}
+var (
+	builtinRUSuffixes    = []any{".ru", ".su", ".xn--p1ai"}
+	writeAppProcessRules = runtime.GOOS != "android"
+)
 
 func processMatchKey(id string) string {
 	if strings.ContainsAny(id, `/\`) {

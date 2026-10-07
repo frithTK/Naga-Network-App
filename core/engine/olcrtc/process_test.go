@@ -99,6 +99,9 @@ func TestDiscoverBinaryFindsSibling(t *testing.T) {
 	}
 	t.Cleanup(func() { executablePath = old })
 	t.Setenv("NAGA_OLCRTC_PATH", "")
+	t.Setenv("NAGA_NATIVE_LIB_DIR", "")
+	t.Setenv("NAGA_OLCRTC_VERSION_FILE", "")
+	t.Setenv("NAGA_DATA_DIR", "")
 	got, err := DiscoverBinary("")
 	if err != nil {
 		t.Fatal(err)

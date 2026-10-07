@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"naga.network/core/androidvpn"
 	"naga.network/core/engine"
 	engineolc "naga.network/core/engine/olcrtc"
 	"naga.network/core/profile"
@@ -203,6 +204,7 @@ func (c *RuntimeController) stopOlcRTCLocked() error {
 		_, _ = c.olcHev.Process.Wait()
 		c.olcHev = nil
 	}
+	androidvpn.StopHev()
 	if c.olcProc != nil {
 		err = errors.Join(err, c.olcProc.Stop())
 		c.olcProc = nil

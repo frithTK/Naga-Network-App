@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
@@ -34,8 +35,9 @@ var (
 
 const (
 	probeConcurrency     = 8
-	nodeListProbeTimeout = 5 * time.Second
-	nodeListProbeBudget  = 80 * time.Second
+	nodeListProbeTimeout = 8 * time.Second
+	quicProbeTimeout     = 12 * time.Second
+	nodeListProbeBudget  = 180 * time.Second
 )
 
 func (c *RuntimeController) resetProbeStateLocked() {
@@ -238,11 +240,18 @@ func (c *RuntimeController) connectedProbeContextLocked() (engine.Runtime, []pol
 // temporary sing-box without TUN, runs the same HTTP generate_204 checks,
 // then stops the process so the system VPN stays down. An active olcRTC
 // tunnel is measured through its SOCKS port instead of sing-box.
+//
+// Android cannot run that idle sing-box: the untrusted app cannot bind
+// netlink route sockets, and stock sing-box panics. Ping there needs an
+// already running VPN (Clash API) or an olcRTC session.
 func (c *RuntimeController) ProbeNodes(parent context.Context) error {
 	c.mu.Lock()
 	olcOn := c.olcProc != nil
 	if runtime, candidates, aliases, ok := c.connectedProbeContextLocked(); ok {
 		c.mu.Unlock()
+		if all := c.allListCandidates(); len(all) > 0 {
+			candidates = all
+		}
 		err := c.probeWithRuntime(parent, runtime, candidates, aliases)
 		if olcOn {
 			_, _ = c.probeOlcRTC(parent)
@@ -257,6 +266,14 @@ func (c *RuntimeController) ProbeNodes(parent context.Context) error {
 	if c.idleProbing {
 		c.mu.Unlock()
 		return ErrProbeInProgress
+	}
+	if !idleSingBoxProbeSupported() {
+		c.mu.Unlock()
+		olcRan, olcErr := c.probeOlcRTC(parent)
+		if olcRan {
+			return olcErr
+		}
+		return ErrRuntimeNotConnected
 	}
 	c.idleProbing = true
 	c.mu.Unlock()
@@ -273,6 +290,10 @@ func (c *RuntimeController) ProbeNodes(parent context.Context) error {
 		return olcErr
 	}
 	return err
+}
+
+func idleSingBoxProbeSupported() bool {
+	return goruntime.GOOS != "android"
 }
 
 func (c *RuntimeController) probeIdle(parent context.Context) error {
@@ -339,8 +360,7 @@ func (c *RuntimeController) probeIdle(parent context.Context) error {
 }
 
 func (c *RuntimeController) probeWithRuntime(parent context.Context, runtime engine.Runtime, candidates []policy.Candidate, aliases map[string]string) error {
-	prober, ok := runtime.(engine.OutboundProber)
-	if !ok {
+	if _, ok := runtime.(engine.OutboundProber); !ok {
 		return nil
 	}
 	if len(candidates) == 0 {
@@ -366,7 +386,8 @@ func (c *RuntimeController) probeWithRuntime(parent context.Context, runtime eng
 			defer wg.Done()
 			for candidate := range jobs {
 				timeout := probeTimeoutFor(candidate, nodeListProbeTimeout)
-				latency, err := prober.Probe(ctx, clashProbeTag(candidate, aliases), timeout)
+				tag := clashProbeTag(candidate, aliases)
+				latency, err := probeOutboundOnce(runtime, ctx, tag, timeout)
 				results <- candidateProbeResult{candidate: candidate, latency: latency, err: err}
 			}
 		}()
@@ -393,10 +414,69 @@ func (c *RuntimeController) probeWithRuntime(parent context.Context, runtime eng
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	seen := make(map[string]struct{}, len(collected))
 	for _, result := range collected {
 		c.recordProbeLocked(result)
+		if id := strings.TrimSpace(result.candidate.ID); id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, candidate := range candidates {
+		id := strings.TrimSpace(candidate.ID)
+		if id == "" {
+			id = strings.TrimSpace(candidate.RuntimeTag)
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		c.recordProbeLocked(candidateProbeResult{candidate: candidate, err: ctx.Err()})
 	}
 	return nil
+}
+
+func probeOutboundOnce(runtime engine.Runtime, ctx context.Context, outbound string, timeout time.Duration) (int, error) {
+	type once interface {
+		ProbeOnce(context.Context, string, time.Duration) (int, error)
+	}
+	if prober, ok := runtime.(once); ok {
+		return prober.ProbeOnce(ctx, outbound, timeout)
+	}
+	if prober, ok := runtime.(engine.OutboundProber); ok {
+		return prober.Probe(ctx, outbound, timeout)
+	}
+	return 0, errors.New("runtime does not support outbound probes")
+}
+
+func (c *RuntimeController) allListCandidates() []policy.Candidate {
+	if c.Store == nil {
+		return nil
+	}
+	values, err := c.Store.List()
+	if err != nil || len(values) == 0 {
+		return nil
+	}
+	now := nowUTC()
+	active := make([]profile.Profile, 0, len(values))
+	for _, value := range values {
+		if value.Subscription.Expired(now) {
+			continue
+		}
+		active = append(active, value)
+	}
+	singBox := profile.SingBoxProfiles(active)
+	awg := profile.AmneziaWGProfiles(active)
+	candidates := make([]policy.Candidate, 0)
+	if len(singBox) > 0 {
+		merged, mergeErr := profile.MergeProfilesForNetwork(singBox, string(c.networkClass()))
+		if mergeErr == nil {
+			candidates = append(candidates, merged.Candidates...)
+		}
+	}
+	if len(awg) > 0 {
+		candidates = append(candidates, amneziaUnifiedCandidates(awg, len(singBox) > 0)...)
+	}
+	candidates = append(candidates, olcRTCUnifiedCandidates(active)...)
+	return candidates
 }
 
 func (c *RuntimeController) unifiedProbeCandidates() []policy.Candidate {

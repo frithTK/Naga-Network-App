@@ -56,6 +56,7 @@ func TestDiscoverBinaryUsesSiblingOfExecutable(t *testing.T) {
 	executablePath = func() (string, error) { return fakeExe, nil }
 	t.Cleanup(func() { executablePath = previous })
 	t.Setenv("NAGA_SINGBOX_PATH", "")
+	t.Setenv("NAGA_NATIVE_LIB_DIR", "")
 
 	got, err := DiscoverBinary("")
 	if err != nil {

@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import 'android_vpn.dart';
 import 'app_update.dart';
 import 'control_plane_client.dart';
 import 'config_file_picker.dart';
@@ -99,7 +100,11 @@ const nagaCaptionButtonSpan = 132.0;
 bool get nagaUsesWindowsChrome =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
 
-String get nagaAppPlatform => nagaUsesWindowsChrome ? 'windows' : 'linux';
+String get nagaAppPlatform {
+  if (nagaUsesWindowsChrome) return 'windows';
+  if (nagaRunsOnAndroid) return 'android';
+  return 'linux';
+}
 
 class NagaTitleBar extends StatelessWidget {
   const NagaTitleBar({
@@ -2135,6 +2140,7 @@ class _DashboardPageState extends State<DashboardPage> {
   String? _updateMessage;
   String? _updateError;
   UpdateCheckResult? _updateCheck;
+  bool _olcrtcReady = true;
 
   bool get _hasProfile => _profileId != null || _profileUrl.isNotEmpty;
 
@@ -2153,6 +2159,11 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Future<void> _startDashboard() async {
+    if (nagaRunsOnAndroid) {
+      final token = await AndroidVpn.instance.waitForControlToken();
+      if (token != null) _controlPlane.updateToken(token);
+      await AndroidVpn.instance.waitUntilHealthy(_controlPlane);
+    }
     await Future.wait([
       _loadUiVersion(),
       _loadAppUpdatePrefs(),
@@ -2220,7 +2231,10 @@ class _DashboardPageState extends State<DashboardPage> {
     try {
       final health = await _controlPlane.healthInfo();
       if (!mounted) return;
-      setState(() => _controlVersion = health.version);
+      setState(() {
+        _controlVersion = health.version;
+        _olcrtcReady = health.olcrtcReady;
+      });
     } on ControlPlaneException {
       // Banner stays quiet while the control-plane is down.
     }
@@ -2281,6 +2295,7 @@ class _DashboardPageState extends State<DashboardPage> {
     } on ControlPlaneException {
       // Exit must remain available even if the runtime cannot be stopped.
     }
+    if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
     try {
       await _trayChannel.invokeMethod<void>('terminate');
     } on MissingPluginException {
@@ -2360,15 +2375,15 @@ class _DashboardPageState extends State<DashboardPage> {
     } on ControlPlaneException {
       // The nodes page shows an actionable empty state.
     }
-    try {
-      final discovered = await _controlPlane.listDiscoveredApps();
-      if (mounted) setState(() => _discoveredApps = discovered);
-    } on ControlPlaneException {
-      if (mounted) setState(() => _discoveredApps = const []);
-    }
+    await _refreshDiscoveredApps();
   }
 
   Future<List<DiscoveredApp>> _refreshDiscoveredApps() async {
+    if (nagaRunsOnAndroid) {
+      final discovered = await AndroidVpn.instance.listPackages();
+      if (mounted) setState(() => _discoveredApps = discovered);
+      return discovered;
+    }
     try {
       final discovered = await _controlPlane.listDiscoveredApps();
       if (mounted) setState(() => _discoveredApps = discovered);
@@ -2427,6 +2442,9 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   void _selectTrafficMode(String trafficMode) {
+    if (nagaRunsOnAndroid && trafficMode == 'system_proxy') {
+      return;
+    }
     final current = _effectiveConnectionPolicy;
     unawaited(
       _saveConnectionPolicy(
@@ -2468,6 +2486,7 @@ class _DashboardPageState extends State<DashboardPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Маршрутизация сохранена.')),
         );
+        unawaited(_rebuildAndroidVpnIfConnected());
       }
     } on ControlPlaneException catch (error) {
       if (mounted) {
@@ -2485,6 +2504,7 @@ class _DashboardPageState extends State<DashboardPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Правило приложения сохранено.')),
         );
+        unawaited(_rebuildAndroidVpnIfConnected());
       }
     } on ControlPlaneException catch (error) {
       if (mounted) {
@@ -2502,6 +2522,7 @@ class _DashboardPageState extends State<DashboardPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Правило приложения удалено.')),
         );
+        unawaited(_rebuildAndroidVpnIfConnected());
       }
     } on ControlPlaneException catch (error) {
       if (mounted) {
@@ -2802,9 +2823,11 @@ class _DashboardPageState extends State<DashboardPage> {
     }
     try {
       final runtime = await _controlPlane.stopRuntime();
+      if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
       if (mounted) _applyRuntime(runtime);
       return true;
     } on ControlPlaneException catch (error) {
+      if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
       if (mounted) {
         setState(() => _updateError = error.message);
       }
@@ -3070,8 +3093,10 @@ class _DashboardPageState extends State<DashboardPage> {
       _runtimeRequestInFlight = true;
       try {
         final runtime = await _controlPlane.stopRuntime();
+        if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
         if (mounted) _applyRuntime(runtime);
       } on ControlPlaneException catch (error) {
+        if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
         if (!mounted) return;
         setState(() => _status = ConnectionStatus.error);
         ScaffoldMessenger.of(context)
@@ -3096,6 +3121,16 @@ class _DashboardPageState extends State<DashboardPage> {
     setState(() => _status = ConnectionStatus.connecting);
     _runtimeRequestInFlight = true;
     try {
+      if (!await _prepareAndroidTunnel()) {
+        if (!mounted) return;
+        setState(() => _status = ConnectionStatus.error);
+        if (!_connectingOlc || _olcrtcReady) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Не удалось создать VPN-интерфейс.')),
+          );
+        }
+        return;
+      }
       final runtime = await _controlPlane.startRuntime(_profileId!);
       if (!mounted) return;
       setState(() {
@@ -3107,6 +3142,7 @@ class _DashboardPageState extends State<DashboardPage> {
         _runtime = runtime;
       });
       if (runtime.status != 'connected') {
+        if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -3117,12 +3153,71 @@ class _DashboardPageState extends State<DashboardPage> {
         );
       }
     } on ControlPlaneException catch (error) {
+      if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
       if (!mounted) return;
       setState(() => _status = ConnectionStatus.error);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(error.message)));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _friendlyRuntimeError(error.message) ?? error.message,
+          ),
+        ),
+      );
     } finally {
       _runtimeRequestInFlight = false;
+    }
+  }
+
+  bool get _connectingOlc =>
+      _selectedNodeIsOlc(_profileNodes?.nodes ?? const []) ||
+      _runtime?.engine == 'olcrtc' ||
+      _profilePreview?.engine == 'olcrtc';
+
+  List<String> get _androidSplitPackages => _effectiveRoutingPolicy.apps
+      .where((app) => app.enabled && app.packageOrProcessId.trim().isNotEmpty)
+      .map((app) => app.packageOrProcessId.trim())
+      .toList(growable: false);
+
+  Future<bool> _prepareAndroidTunnel() async {
+    if (!nagaRunsOnAndroid) return true;
+    if (_connectingOlc && !_olcrtcReady) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('olcRTC недоступен на Android.')),
+        );
+      }
+      return false;
+    }
+    final prepared = await AndroidVpn.instance.prepare();
+    if (!prepared) return false;
+    return AndroidVpn.instance.start(
+      engine: _connectingOlc ? 'olcrtc' : 'singbox',
+      routing: _effectiveRoutingPolicy.mode,
+      packages: _androidSplitPackages,
+    );
+  }
+
+  Future<void> _rebuildAndroidVpnIfConnected() async {
+    if (!nagaRunsOnAndroid || !_isConnected || _profileId == null) return;
+    try {
+      await _controlPlane.stopRuntime();
+      await AndroidVpn.instance.stop();
+      if (!await _prepareAndroidTunnel()) {
+        if (mounted) setState(() => _status = ConnectionStatus.error);
+        return;
+      }
+      final runtime = await _controlPlane.startRuntime(_profileId!);
+      if (mounted) _applyRuntime(runtime);
+      if (runtime.status != 'connected' && nagaRunsOnAndroid) {
+        await AndroidVpn.instance.stop();
+      }
+    } on ControlPlaneException catch (error) {
+      await AndroidVpn.instance.stop();
+      if (mounted) {
+        setState(() => _status = ConnectionStatus.error);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.message)));
+      }
     }
   }
 
@@ -3254,6 +3349,7 @@ class _DashboardPageState extends State<DashboardPage> {
       if (confirmed != true || !mounted) return;
       if (!throughTunnel) {
         await _controlPlane.stopRuntime();
+        if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
       }
       final saved = useServerFetch
           ? await _controlPlane.importProfile(url)
@@ -4067,6 +4163,50 @@ String nagaNodePingLabel(UnifiedNode node) {
   return '—';
 }
 
+final _nagaFlagPrefix = RegExp(
+  r'^[\u{1F1E6}-\u{1F1FF}]{2}',
+  unicode: true,
+);
+
+String nagaNodeFlag(String tag) {
+  final match = _nagaFlagPrefix.firstMatch(tag.trim());
+  return match?.group(0) ?? '';
+}
+
+String nagaNodeTitle(UnifiedNode node) {
+  var title = node.tag.trim().replaceFirst(
+    RegExp(r'^[\u{1F1E6}-\u{1F1FF}]{2}\s*', unicode: true),
+    '',
+  );
+  final protocol = node.protocol.trim();
+  if (protocol.isNotEmpty) {
+    final lower = title.toLowerCase();
+    final proto = protocol.toLowerCase();
+    if (lower == proto) {
+      return protocol;
+    }
+    if (lower.endsWith(proto)) {
+      title = title.substring(0, title.length - protocol.length).trim();
+      title = title.replaceFirst(RegExp(r'[\s·\-–/]+$'), '');
+    }
+  }
+  if (title.isEmpty) {
+    return protocol.isNotEmpty ? protocol : 'Без названия';
+  }
+  return title;
+}
+
+String nagaNodeProtocolLabel(UnifiedNode node) {
+  final protocol = node.protocol.trim();
+  if (protocol.isEmpty) {
+    return '';
+  }
+  if (nagaNodeTitle(node).toLowerCase() == protocol.toLowerCase()) {
+    return '';
+  }
+  return protocol;
+}
+
 int? nagaHomeLatencyMs({
   int? runtimeLatencyMs,
   required String selectedNode,
@@ -4343,23 +4483,103 @@ class _NagaNodesViewState extends State<NagaNodesView> {
   }
 
   Widget _nodeTile(UnifiedNode node) {
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-      leading: const _SoftIcon(Icons.public_rounded),
-      title: Text(
-        [
-          if (node.tag.isNotEmpty) node.tag else 'Без названия',
-          if (node.protocol.isNotEmpty) node.protocol,
-        ].join(' · '),
+    final flag = nagaNodeFlag(node.tag);
+    final title = nagaNodeTitle(node);
+    final protocol = nagaNodeProtocolLabel(node);
+    final ping = nagaNodePingLabel(node);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          _nodeLeading(flag),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    height: 1.25,
+                  ),
+                ),
+                if (protocol.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    protocol,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: _muted,
+                      fontSize: 13,
+                      height: 1.2,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          SizedBox(
+            width: 56,
+            child: _probing
+                ? const Center(
+                    child: SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                : Text(
+                    ping,
+                    maxLines: 1,
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(
+                      color: _muted,
+                      fontSize: 13,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+          ),
+          const SizedBox(width: 12),
+          SizedBox(
+            width: 148,
+            height: 40,
+            child: OutlinedButton(
+              onPressed: () => widget.onSelect(node),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                visualDensity: VisualDensity.compact,
+              ),
+              child: Text(
+                widget.connected ? 'Выбрать' : 'Основной',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+        ],
       ),
-      subtitle: Text(
-        nagaNodePingLabel(node),
-        style: const TextStyle(color: _muted),
+    );
+  }
+
+  Widget _nodeLeading(String flag) {
+    if (flag.isEmpty) {
+      return const _SoftIcon(Icons.public_rounded);
+    }
+    return Container(
+      width: 40,
+      height: 40,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: _surface,
+        borderRadius: BorderRadius.circular(NagaRadius.control),
       ),
-      trailing: OutlinedButton(
-        onPressed: () => widget.onSelect(node),
-        child: Text(widget.connected ? 'Выбрать' : 'Сделать основным'),
-      ),
+      child: Text(flag, style: const TextStyle(fontSize: 20, height: 1)),
     );
   }
 }
@@ -4679,6 +4899,22 @@ class _TrafficModeSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (nagaRunsOnAndroid) {
+      return const Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Режим трафика',
+            style: TextStyle(fontWeight: FontWeight.w600),
+          ),
+          SizedBox(height: 8),
+          Text(
+            'Трафик устройства направляется по правилам маршрутизации.',
+            style: TextStyle(color: _muted, fontSize: 12),
+          ),
+        ],
+      );
+    }
     final selected = value == 'system_proxy' ? 'system_proxy' : 'tun';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -5548,6 +5784,20 @@ String? _friendlyRuntimeError(String? error) {
   final normalized = error
       .replaceAll(RegExp(r'\x1b\[[0-9;]*m'), '')
       .toLowerCase();
+  if (normalized.contains('ни один vpn-узел') ||
+      normalized.contains('не прошёл проверку доступности') ||
+      normalized.contains('не прошел проверку доступности')) {
+    return 'Серверы сейчас недоступны. Проверь интернет без VPN и повтори.';
+  }
+  if (normalized.contains('hev-socks5-tunnel binary') ||
+      normalized.contains('libhevfd')) {
+    return 'Не удалось запустить VPN-туннель на этом устройстве.';
+  }
+  if (normalized.contains('olcrtc binary') ||
+      normalized.contains('olcrtc mode is not available') ||
+      normalized.contains('olcrtc недоступ')) {
+    return 'olcRTC недоступен на этом устройстве.';
+  }
   if (normalized.contains('запуск отменён') ||
       normalized.contains('права администратора не выданы') ||
       normalized.contains('uac')) {
@@ -5574,6 +5824,15 @@ String? _friendlyRuntimeError(String? error) {
   }
   if (normalized.contains('legacy dns')) {
     return 'Профиль использует устаревшую настройку DNS. Обнови профиль или выбери другой узел.';
+  }
+  if (normalized.contains('empty direct outbound') ||
+      normalized.contains('naga-dns')) {
+    return 'Не удалось запустить VPN: ошибка DNS. Обнови приложение и повтори.';
+  }
+  if (normalized.contains('не удалось запустить vpn-ядро') ||
+      normalized.contains('panic:') ||
+      normalized.contains('nil pointer')) {
+    return 'Не удалось запустить VPN на этом устройстве. Обнови приложение и повтори.';
   }
   if (normalized.contains('dns') ||
       normalized.contains('detour') ||
@@ -6380,6 +6639,8 @@ class _ApplicationsPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final emptyHint = nagaUsesWindowsChrome
         ? 'Добавь имя exe, например Telegram.exe, или полный путь к программе.'
+        : nagaRunsOnAndroid
+        ? 'Выбери приложение из списка установленных пакетов.'
         : 'Добавь имя процесса, например telegram-desktop или firefox.';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -6528,6 +6789,8 @@ class _ApplicationsPage extends StatelessWidget {
     var query = '';
     final processHint = nagaUsesWindowsChrome
         ? r'Telegram.exe или C:\Program Files\...\app.exe'
+        : nagaRunsOnAndroid
+        ? 'eu.example.app'
         : 'firefox или /usr/bin/firefox';
     final result = await showDialog<AppRoute>(
       context: context,
@@ -6546,6 +6809,8 @@ class _ApplicationsPage extends StatelessWidget {
             final emptyMatchesText = discoveredApps.isEmpty
                 ? (nagaUsesWindowsChrome
                       ? 'Список запущенных процессов пуст или недоступен — введи имя exe вручную.'
+                      : nagaRunsOnAndroid
+                      ? 'Список приложений пуст или нет QUERY_ALL_PACKAGES — введи имя пакета вручную.'
                       : 'Нет подходящих процессов — введи имя вручную.')
                 : 'Нет совпадений — введи имя вручную.';
             return AlertDialog(

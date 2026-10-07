@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ masks the splash glyph to a circle (~2/3 of the asset).
+     splash_mark is already padded so the N stays inside that circle. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/ic_launcher_background"/>
+    <item>
+        <bitmap
+            android:gravity="fill"
+            android:src="@drawable/splash_mark"/>
+    </item>
+</layer-list>

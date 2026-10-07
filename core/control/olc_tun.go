@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"time"
 
+	"naga.network/core/androidvpn"
 	engineolc "naga.network/core/engine/olcrtc"
 	olcprofile "naga.network/core/profile/olcrtc"
 )
@@ -28,6 +29,9 @@ func (osExecer) Output(name string, args ...string) ([]byte, error) {
 }
 
 func (c *RuntimeController) bringUpOlcTunnelLocked(profileID string, cfg *olcprofile.Config) (engineolc.LinkState, error) {
+	if runtime.GOOS == "android" {
+		return c.startAndroidHevLocked(profileID, androidvpn.OlcIPv4, androidvpn.OlcPort)
+	}
 	if runtime.GOOS == "windows" {
 		return c.bringUpWindowsOlcTunnelLocked(profileID, cfg)
 	}

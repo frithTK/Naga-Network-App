@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"naga.network/core/androidvpn"
 	"naga.network/core/diagnostics"
 	"naga.network/core/engine"
 	awgengine "naga.network/core/engine/amneziawg"
@@ -552,6 +553,7 @@ func (c *RuntimeController) Stop() (snapshot RuntimeSnapshot, resultErr error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.startAborted = true
+	androidvpn.StopHev()
 	olcEngine := c.activeEngine == profile.EngineOlcRTC
 	if err := c.stopOlcRTCLocked(); err != nil {
 		c.lastError = safeRuntimeError(err)
@@ -1035,6 +1037,10 @@ func safeRuntimeError(err error) string {
 		return ""
 	}
 	message := ansiEscapePattern.ReplaceAllString(awgcfg.SafeError(err), "")
+	lowered := strings.ToLower(message)
+	if strings.Contains(lowered, "panic:") || strings.Contains(lowered, "nil pointer dereference") {
+		return "не удалось запустить VPN-ядро"
+	}
 	if strings.Contains(message, "TUNSETIFF") || strings.Contains(message, "configure tun interface") {
 		return tunCreateErrorMessage(message)
 	}

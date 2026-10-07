@@ -3,6 +3,7 @@ package policy
 import (
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
 )
 
@@ -61,6 +62,8 @@ type RoutingPolicy struct {
 	Apps           []AppRoute  `json:"apps"`
 }
 
+var currentGOOS = runtime.GOOS
+
 func DefaultConnectionPolicy() ConnectionPolicy {
 	return ConnectionPolicy{
 		SchemaVersion:       1,
@@ -89,6 +92,9 @@ func (p ConnectionPolicy) Validate() error {
 	}
 	if p.TrafficMode != TrafficTUN && p.TrafficMode != TrafficSystemProxy {
 		return errors.New("traffic mode is invalid")
+	}
+	if currentGOOS == "android" && p.TrafficMode == TrafficSystemProxy {
+		return errors.New("system proxy is not supported on Android")
 	}
 	return nil
 }
