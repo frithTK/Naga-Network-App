@@ -543,8 +543,13 @@ class ControlPlaneClient {
        _client = client ?? http.Client();
 
   final String _baseUrl;
-  final String? _token;
+  String? _token;
   final http.Client _client;
+
+  void updateToken(String? token) {
+    final trimmed = token?.trim();
+    _token = (trimmed == null || trimmed.isEmpty) ? null : trimmed;
+  }
 
   Map<String, String> _headers([Map<String, String>? extra]) {
     return {if (_token != null) 'Authorization': 'Bearer $_token', ...?extra};
@@ -847,7 +852,7 @@ class ControlPlaneClient {
             Uri.parse('$_baseUrl/v1/nodes/probe'),
             headers: _headers(const {'Content-Type': 'application/json'}),
           )
-          .timeout(const Duration(seconds: 110));
+          .timeout(const Duration(seconds: 200));
     } on TimeoutException {
       throw const ControlPlaneException(
         'Проверка серверов заняла слишком много времени.',
@@ -861,10 +866,16 @@ class ControlPlaneClient {
       throw const ControlPlaneException('Включи VPN, чтобы измерить задержку.');
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ControlPlaneException(
-        _jsonErrorMessage(response.body) ??
-            'Не удалось проверить доступность серверов.',
-      );
+      final message = _jsonErrorMessage(response.body) ??
+          'Не удалось проверить доступность серверов.';
+      final normalized = message.toLowerCase();
+      if (normalized.contains('olcrtc binary') ||
+          normalized.contains('olcrtc mode is not available')) {
+        throw const ControlPlaneException(
+          'Включи VPN, чтобы измерить задержку.',
+        );
+      }
+      throw ControlPlaneException(message);
     }
     try {
       final payload = jsonDecode(response.body) as List<dynamic>;

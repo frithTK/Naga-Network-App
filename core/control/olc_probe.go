@@ -64,9 +64,16 @@ func (c *RuntimeController) probeOlcRTC(ctx context.Context) (bool, error) {
 		return true, err
 	}
 	if err := c.probeOlcRTCDetached(ctx, target, cfg); err != nil {
+		if skipDetachedOlcProbe(err) {
+			return false, nil
+		}
 		return true, err
 	}
 	return true, nil
+}
+
+func skipDetachedOlcProbe(err error) bool {
+	return errors.Is(err, engineolc.ErrBinaryNotFound) || errors.Is(err, engineolc.ErrVersion)
 }
 
 // olcLiveProbeTag is the list row that should receive a measurement of the

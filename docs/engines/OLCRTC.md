@@ -22,7 +22,7 @@ olcrtc://<provider>?<transport>@<room>#<key>$<name>
 
 SOCKS `127.0.0.1:10808`, DNS `1.1.1.1:53`, UDP `max_flows: 256`, сессия `6h`. Несколько профилей — failover `retry_delay: 2s`, `max_cycles: 0`. YAML лежит в `.olcrtc/<id>/client.yaml` с правами `0600` и удаляется вместе с профилем. В журнал не пишутся ключ и комната.
 
-Linux поднимает TUN `naga-olc0` через hev-socks5-tunnel поверх SOCKS `127.0.0.1:10808`. Windows делает то же через отдельный elevated-host `naga-control --olc-host` (не `--tun-host` sing-box): после setup через helper без UAC, в portable — UAC, `hev-socks5-tunnel.exe`, маршруты `route.exe`. Системный прокси WinINET на `:10808` не включается. Бинарник `hev-socks5-tunnel` ищется в `NAGA_HEV_PATH`, рядом с `naga-control` (`hev-socks5-tunnel.exe` на Windows) и в `PATH`.
+Linux поднимает TUN `naga-olc0` через hev-socks5-tunnel поверх SOCKS `127.0.0.1:10808`. Windows делает то же через отдельный elevated-host `naga-control --olc-host` (не `--tun-host` sing-box): после setup через helper без UAC, в portable — UAC, `hev-socks5-tunnel.exe`, маршруты `route.exe`. Системный прокси WinINET на `:10808` не включается. На Android hev читает fd `VpnService` (`libhevfd.so`), без имени `naga-olc0`; нет NDK-сборки olcrtc — `olcrtc_ready=false`, профиль не удаляется. Бинарник `hev-socks5-tunnel` ищется в `NAGA_HEV_PATH`, рядом с `naga-control` (`hev-socks5-tunnel.exe` на Windows, `libhevfd.so` на Android) и в `PATH`.
 
 Через транспорт `datachannel` коммита `7f849e08` часть адресов может не открываться, даже когда туннель поднят. Это ограничение ядра и комнаты, не признак того, что VPN выключен.
 

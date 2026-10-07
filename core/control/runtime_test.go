@@ -284,6 +284,23 @@ func TestSafeRuntimeErrorKeepsFatalLine(t *testing.T) {
 	}
 }
 
+func TestSafeRuntimeErrorHidesEnginePanic(t *testing.T) {
+	err := errors.New("start sing-box: exit status 2: panic: runtime error: invalid memory address or nil pointer dereference")
+	if got := safeRuntimeError(err); got != "не удалось запустить VPN-ядро" {
+		t.Fatalf("panic = %q", got)
+	}
+}
+
+func TestIdleSingBoxProbeSupportedOnThisOS(t *testing.T) {
+	got := idleSingBoxProbeSupported()
+	if runtime.GOOS == "android" && got {
+		t.Fatal("Android must not spawn idle sing-box")
+	}
+	if runtime.GOOS != "android" && !got {
+		t.Fatal("desktop idle probe must stay available")
+	}
+}
+
 func TestSafeRuntimeErrorMapsWindowsStuckTUN(t *testing.T) {
 	err := errors.New("exit status 1: FATAL start inbound/tun[tun-in]: configure tun interface: (create adapter: Cannot create a file when that file already exists. | open existing adapter: Element not found.)")
 	if got := safeRuntimeError(err); got != tunWindowsStuckError {
@@ -837,6 +854,48 @@ func TestRuntimeControllerIdleProbeDoesNotConnectVPN(t *testing.T) {
 	cache := controller.ProbeSnapshot()
 	if cache[vlessTag].LatencyMS != 42 || cache[tuicTag].LatencyMS != 5 {
 		t.Fatalf("idle probe cache = %#v", cache)
+	}
+}
+
+func TestProbeNodesMeasuresEveryProtocolWhenOneNodeIsSelected(t *testing.T) {
+	store, value := saveAutoProbeProfile(t)
+	vlessTag := value.ID + "::vless"
+	tuicTag := value.ID + "::tuic"
+	runtime := &probingRuntime{outcomes: map[string]probeOutcome{
+		vlessTag: {latency: 42},
+		tuicTag:  {latency: 80},
+	}}
+	controller := NewRuntimeController(&store, probingAdapter{runtime: runtime})
+	if _, err := controller.Start(value.ID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = controller.Stop() })
+	runtime.mu.Lock()
+	runtime.attempts = nil
+	runtime.mu.Unlock()
+	controller.mu.Lock()
+	controller.runtimeCandidates = candidatesForSelection(controller.runtimeCandidates, "vless")
+	controller.mu.Unlock()
+	if err := controller.ProbeNodes(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.wasProbed(vlessTag) || !runtime.wasProbed(tuicTag) {
+		t.Fatalf("list probe attempts = %#v", runtime.attempts)
+	}
+	if runtime.timeouts[tuicTag] != quicProbeTimeout {
+		t.Fatalf("tuic probe timeout = %v, want %v", runtime.timeouts[tuicTag], quicProbeTimeout)
+	}
+}
+
+func TestProbeTimeoutForQUICProtocols(t *testing.T) {
+	if got := probeTimeoutFor(policy.Candidate{Protocol: "Hysteria2", Type: "hysteria2"}, time.Second); got != quicProbeTimeout {
+		t.Fatalf("hysteria2 timeout = %v", got)
+	}
+	if got := probeTimeoutFor(policy.Candidate{Protocol: "TUIC", Type: "tuic"}, time.Second); got != quicProbeTimeout {
+		t.Fatalf("tuic timeout = %v", got)
+	}
+	if got := probeTimeoutFor(policy.Candidate{Protocol: "VLESS", Type: "vless"}, 8*time.Second); got != 8*time.Second {
+		t.Fatalf("vless timeout = %v", got)
 	}
 }
 

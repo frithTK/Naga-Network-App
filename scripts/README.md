@@ -53,6 +53,11 @@ chocolatey). Подробности: [WINDOWS.md](../docs/platforms/WINDOWS.md).
 ./scripts/android/build-apk.sh
 ```
 
-Артефакт: `dist/NagaNetwork-<version>-arm64-v8a.apk`. Нужен Android SDK.
-Подпись release-keystore — до первой выкладки на GitHub Releases.
+Артефакт: `dist/NagaNetwork-<version>-arm64-v8a.apk`. Нужны Flutter, Go с CGO и Android NDK (API 26, `aarch64-linux-android26-clang`, `ANDROID_NDK_HOME`). Скрипт кладёт `libnaga.so`, `libsingbox.so`, `libhevfd.so` (и olcRTC, если NDK-сборка прошла) в `jniLibs/arm64-v8a`. Подпись release-keystore (`app/android/key.properties`) — до первой выкладки на GitHub Releases. Подробности: [ANDROID.md](../docs/platforms/ANDROID.md).
+
+Локальный эмулятор (Pixel 7, API 36, x86_64):
+
+```bash
+./scripts/android/run-emulator.sh
+```
 

@@ -26,6 +26,9 @@ func DiscoverBinary(explicit string) (string, error) {
 		}
 		return value, nil
 	}
+	if path := nativeLibCandidate(singBoxNames()); path != "" {
+		return path, nil
+	}
 	if sibling := siblingSingBox(); sibling != "" {
 		return sibling, nil
 	}
@@ -83,7 +86,24 @@ func singBoxNames() []string {
 	if runtime.GOOS == "windows" {
 		return []string{"sing-box.exe", "sing-box"}
 	}
+	if runtime.GOOS == "android" {
+		return []string{"libsingbox.so", "sing-box"}
+	}
 	return []string{"sing-box"}
+}
+
+func nativeLibCandidate(names []string) string {
+	dir := strings.TrimSpace(os.Getenv("NAGA_NATIVE_LIB_DIR"))
+	if dir == "" {
+		return ""
+	}
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
 }
 
 func requireWindowsRuntimeDLL(singBox string) error {

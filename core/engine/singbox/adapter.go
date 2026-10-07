@@ -92,9 +92,9 @@ func (a Adapter) Start(ctx context.Context, config []byte) (engine.Runtime, erro
 	removeConfigDir := false
 	if configDir == "" {
 		var err error
-		configDir, err = os.MkdirTemp("", "naga-singbox-")
+		configDir, err = os.MkdirTemp(os.TempDir(), "naga-singbox-")
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("create runtime config directory: %w", err)
 		}
 		removeConfigDir = true
 	}
@@ -221,7 +221,14 @@ func (a Adapter) Start(ctx context.Context, config []byte) (engine.Runtime, erro
 }
 
 func (a Adapter) checkConfig(ctx context.Context, config []byte) error {
-	directory, err := os.MkdirTemp("", "naga-singbox-check-")
+	parent := strings.TrimSpace(a.ConfigDir)
+	if parent == "" {
+		parent = os.TempDir()
+	}
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return fmt.Errorf("create config check directory: %w", err)
+	}
+	directory, err := os.MkdirTemp(parent, "naga-singbox-check-")
 	if err != nil {
 		return fmt.Errorf("create config check directory: %w", err)
 	}
@@ -459,6 +466,13 @@ func (r *processRuntime) Probe(ctx context.Context, outbound string, timeout tim
 		return 0, errors.New("sing-box runtime API is unavailable")
 	}
 	return r.api.Probe(ctx, outbound, timeout)
+}
+
+func (r *processRuntime) ProbeOnce(ctx context.Context, outbound string, timeout time.Duration) (int, error) {
+	if r.api == nil {
+		return 0, errors.New("sing-box runtime API is unavailable")
+	}
+	return r.api.probeOnce(ctx, outbound, timeout)
 }
 
 type runtimeAPI struct {

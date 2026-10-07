@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"naga.network/core/androidvpn"
 	"naga.network/core/engine"
 	awgengine "naga.network/core/engine/amneziawg"
 	"naga.network/core/policy"
@@ -298,6 +300,16 @@ func (c *RuntimeController) finishStartLocked(
 		cancel()
 		c.lastError = safeRuntimeError(err)
 		return c.snapshotLocked(), err
+	}
+	if goruntime.GOOS == "android" && connectionPolicy.TrafficMode == policy.TrafficTUN {
+		*stage = "android_hev"
+		if _, err := c.startAndroidHevLocked(profileID, androidvpn.SingBoxIPv4, androidvpn.SingBoxPort); err != nil {
+			cancel()
+			_ = runtime.Stop()
+			androidvpn.StopHev()
+			c.lastError = safeRuntimeError(err)
+			return c.snapshotLocked(), err
+		}
 	}
 	c.runtime = runtime
 	c.runtimeCancel = cancel
@@ -622,10 +634,27 @@ func probeTimeoutFor(candidate policy.Candidate, fallback time.Duration) time.Du
 	if strings.EqualFold(candidate.Protocol, "AmneziaWG") || strings.EqualFold(candidate.Type, "amneziawg") || awgcfg.IsLeafTag(candidate.RuntimeTag) {
 		return awgFirstProbeTimeout
 	}
+	if candidateNeedsLongProbe(candidate) {
+		return quicProbeTimeout
+	}
 	if fallback > 0 {
 		return fallback
 	}
 	return outboundProbeTimeout
+}
+
+func candidateNeedsLongProbe(candidate policy.Candidate) bool {
+	protocol := strings.ToLower(strings.TrimSpace(candidate.Protocol))
+	kind := strings.ToLower(strings.TrimSpace(candidate.Type))
+	switch protocol {
+	case "tuic", "hysteria2", "hysteria":
+		return true
+	}
+	switch kind {
+	case "tuic", "hysteria2", "hysteria":
+		return true
+	}
+	return false
 }
 
 func amneziaCandidate(value profile.Profile) policy.Candidate {

@@ -12,6 +12,14 @@ import (
 	"naga.network/core/profile"
 )
 
+func TestAdapterCheckConfigUsesConfigDir(t *testing.T) {
+	parent := t.TempDir()
+	adapter := Adapter{BinaryPath: "true", ConfigDir: parent}
+	if err := adapter.checkConfig(context.Background(), []byte(`{"outbounds":[{"type":"direct","tag":"direct"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAdapterValidatesConfig(t *testing.T) {
 	adapter := Adapter{}
 	if err := adapter.Validate(context.Background(), []byte(`{"outbounds":[{"type":"direct"}]}`)); err != nil {

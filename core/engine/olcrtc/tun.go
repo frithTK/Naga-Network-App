@@ -29,7 +29,24 @@ func tunnelNames() []string {
 	if runtime.GOOS == "windows" {
 		return []string{"hev-socks5-tunnel.exe", "hev-socks5-tunnel"}
 	}
+	if runtime.GOOS == "android" {
+		return []string{"libhevfd.so", "hev-socks5-tunnel"}
+	}
 	return []string{"hev-socks5-tunnel"}
+}
+
+func nativeTunnelCandidate() string {
+	dir := strings.TrimSpace(os.Getenv("NAGA_NATIVE_LIB_DIR"))
+	if dir == "" {
+		return ""
+	}
+	for _, name := range tunnelNames() {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
 }
 
 func siblingTunnel() string {
@@ -68,6 +85,9 @@ func DiscoverTunnel(explicit string) (string, error) {
 			return "", ErrTunnelBinary
 		}
 		return value, nil
+	}
+	if path := nativeTunnelCandidate(); path != "" {
+		return path, nil
 	}
 	if sibling := siblingTunnel(); sibling != "" {
 		return sibling, nil

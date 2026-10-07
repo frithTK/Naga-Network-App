@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -414,6 +416,62 @@ void main() {
     expect(nagaProtocolPriority('VLESS', network: 'cellular'), 0);
   });
 
+  test('node list title drops flag and duplicate protocol', () {
+    expect(
+      nagaNodeTitle(
+        const UnifiedNode(
+          id: 'ca',
+          profileId: 'p',
+          tag: '🇨🇦 Canada (CA) Hysteria2',
+          runtimeTag: 'p::ca',
+          country: 'Canada',
+          protocol: 'Hysteria2',
+        ),
+      ),
+      'Canada (CA)',
+    );
+    expect(nagaNodeFlag('🇨🇦 Canada (CA) Hysteria2'), '🇨🇦');
+    expect(
+      nagaNodeProtocolLabel(
+        const UnifiedNode(
+          id: 'ca',
+          profileId: 'p',
+          tag: '🇨🇦 Canada (CA) Hysteria2',
+          runtimeTag: 'p::ca',
+          country: 'Canada',
+          protocol: 'Hysteria2',
+        ),
+      ),
+      'Hysteria2',
+    );
+    expect(
+      nagaNodeTitle(
+        const UnifiedNode(
+          id: 'awg',
+          profileId: 'p',
+          tag: 'AmneziaWG',
+          runtimeTag: 'p::awg',
+          country: 'Netherlands',
+          protocol: 'AmneziaWG',
+        ),
+      ),
+      'AmneziaWG',
+    );
+    expect(
+      nagaNodeProtocolLabel(
+        const UnifiedNode(
+          id: 'awg',
+          profileId: 'p',
+          tag: 'AmneziaWG',
+          runtimeTag: 'p::awg',
+          country: 'Netherlands',
+          protocol: 'AmneziaWG',
+        ),
+      ),
+      '',
+    );
+  });
+
   testWidgets('grouped node list keeps auto on top and hides profile ids', (
     tester,
   ) async {
@@ -452,11 +510,97 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Рекомендуемые'), findsOneWidget);
-    expect(find.text('Frankfurt · VLESS'), findsOneWidget);
+    expect(find.text('Frankfurt'), findsOneWidget);
+    expect(find.text('VLESS'), findsOneWidget);
     expect(find.text('secret-profile'), findsNothing);
     expect(find.text('Включи VPN, чтобы измерить задержку.'), findsNothing);
     expect(find.text('Проверить'), findsOneWidget);
     expect(find.text('—'), findsOneWidget);
+  });
+
+  testWidgets('probe animates ping on every protocol row', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final pending = Completer<List<UnifiedNode>>();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: NagaNodesView(
+              nodes: const [
+                UnifiedNode(
+                  id: 'vless',
+                  profileId: 'p',
+                  tag: 'Estonia VLESS',
+                  runtimeTag: 'p::vless',
+                  country: 'Estonia',
+                  protocol: 'VLESS',
+                ),
+                UnifiedNode(
+                  id: 'hy2',
+                  profileId: 'p',
+                  tag: 'Estonia Hysteria2',
+                  runtimeTag: 'p::hy2',
+                  country: 'Estonia',
+                  protocol: 'Hysteria2',
+                ),
+                UnifiedNode(
+                  id: 'tuic',
+                  profileId: 'p',
+                  tag: 'Estonia TUIC',
+                  runtimeTag: 'p::tuic',
+                  country: 'Estonia',
+                  protocol: 'TUIC',
+                ),
+              ],
+              connected: true,
+              onSelect: (_) {},
+              onProbe: () => pending.future,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Проверить'));
+    await tester.pump();
+    expect(find.byType(CircularProgressIndicator), findsNWidgets(4));
+    pending.complete(const [
+      UnifiedNode(
+        id: 'vless',
+        profileId: 'p',
+        tag: 'Estonia VLESS',
+        runtimeTag: 'p::vless',
+        country: 'Estonia',
+        protocol: 'VLESS',
+        latencyMs: 42,
+        probeStatus: 'healthy',
+      ),
+      UnifiedNode(
+        id: 'hy2',
+        profileId: 'p',
+        tag: 'Estonia Hysteria2',
+        runtimeTag: 'p::hy2',
+        country: 'Estonia',
+        protocol: 'Hysteria2',
+        latencyMs: 88,
+        probeStatus: 'healthy',
+      ),
+      UnifiedNode(
+        id: 'tuic',
+        profileId: 'p',
+        tag: 'Estonia TUIC',
+        runtimeTag: 'p::tuic',
+        country: 'Estonia',
+        protocol: 'TUIC',
+        latencyMs: 110,
+        probeStatus: 'healthy',
+      ),
+    ]);
+    await tester.pumpAndSettle();
+    expect(find.text('42 мс'), findsOneWidget);
+    expect(find.text('88 мс'), findsOneWidget);
+    expect(find.text('110 мс'), findsOneWidget);
   });
 
   testWidgets('olcRTC variants use the subscription name', (tester) async {
@@ -513,10 +657,12 @@ void main() {
         protocol: 'olcRTC',
       ),
     ]);
-    expect(find.text('Tallinn · VLESS'), findsOneWidget);
-    expect(find.text('AmneziaWG · AmneziaWG'), findsOneWidget);
-    expect(find.text('🇵🇱 Poland (PL) Jitsi · olcRTC'), findsOneWidget);
-    expect(find.text('🇨🇿 Czechia (CZ) Jitsi · olcRTC'), findsOneWidget);
+    expect(find.text('Tallinn'), findsOneWidget);
+    expect(find.text('VLESS'), findsOneWidget);
+    expect(find.text('AmneziaWG'), findsOneWidget);
+    expect(find.text('AmneziaWG · AmneziaWG'), findsNothing);
+    expect(find.text('Poland (PL) Jitsi'), findsOneWidget);
+    expect(find.text('Czechia (CZ) Jitsi'), findsOneWidget);
     expect(find.textContaining('olcRTC (beta)'), findsNothing);
 
     await pump(const [
@@ -592,10 +738,14 @@ void main() {
     );
 
     expect(find.text('Рекомендуемые'), findsOneWidget);
-    expect(find.text('Amsterdam · VLESS'), findsOneWidget);
-    expect(find.text('Frankfurt · Hysteria2'), findsOneWidget);
-    expect(find.text('AmneziaWG · AmneziaWG'), findsOneWidget);
-    expect(find.text('Berlin · Trojan'), findsOneWidget);
+    expect(find.text('Amsterdam'), findsOneWidget);
+    expect(find.text('VLESS'), findsOneWidget);
+    expect(find.text('Frankfurt'), findsOneWidget);
+    expect(find.text('Hysteria2'), findsOneWidget);
+    expect(find.text('AmneziaWG'), findsOneWidget);
+    expect(find.text('AmneziaWG · AmneziaWG'), findsNothing);
+    expect(find.text('Berlin'), findsOneWidget);
+    expect(find.text('Trojan'), findsOneWidget);
     expect(find.text('Germany'), findsOneWidget);
     expect(find.text('Netherlands'), findsNothing);
   });

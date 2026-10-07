@@ -230,6 +230,30 @@ func TestApplyRoutingPolicyAddsLinuxProcessRules(t *testing.T) {
 	}
 }
 
+func TestApplyRoutingPolicySkipsProcessRulesOnAndroid(t *testing.T) {
+	prev := writeAppProcessRules
+	writeAppProcessRules = false
+	t.Cleanup(func() { writeAppProcessRules = prev })
+	config := []byte(`{"route":{"final":"Mode"},"outbounds":[{"type":"selector","tag":"Mode","outbounds":["node"]},{"type":"vless","tag":"node"},{"type":"direct","tag":"direct"}]}`)
+	routed, err := ApplyRoutingPolicy(config, policy.RoutingPolicy{
+		Mode: policy.RoutingSelectedVPN,
+		Apps: []policy.AppRoute{{
+			ID:                 "org.mozilla.firefox",
+			DisplayName:        "Firefox",
+			Platform:           "android",
+			PackageOrProcessID: "org.mozilla.firefox",
+			Route:              "vpn",
+			Enabled:            true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(routed), "process_name") || strings.Contains(string(routed), "package_name") {
+		t.Fatalf("android routing leaked process rules: %s", routed)
+	}
+}
+
 func TestApplyRoutingPolicyUsesWindowsProcessPath(t *testing.T) {
 	config := []byte(`{"route":{"final":"Mode"},"outbounds":[{"type":"selector","tag":"Mode","outbounds":["node"]},{"type":"vless","tag":"node"},{"type":"direct","tag":"direct"}]}`)
 	routed, err := ApplyRoutingPolicy(config, policy.RoutingPolicy{

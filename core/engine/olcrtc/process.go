@@ -182,13 +182,27 @@ func CheckVersion(ctx context.Context, binary string) error {
 	if strings.TrimSpace(binary) == "" {
 		return ErrBinaryNotFound
 	}
-	path := filepath.Join(filepath.Dir(binary), "olcrtc.version")
-	data, err := os.ReadFile(path)
-	text := strings.TrimSpace(string(data))
-	if err != nil || !strings.Contains(text, PinnedCommit) {
-		return ErrVersion
+	for _, path := range versionFiles(binary) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(strings.TrimSpace(string(data)), PinnedCommit) {
+			return nil
+		}
 	}
-	return nil
+	return ErrVersion
+}
+
+func versionFiles(binary string) []string {
+	files := []string{filepath.Join(filepath.Dir(binary), "olcrtc.version")}
+	if extra := strings.TrimSpace(os.Getenv("NAGA_OLCRTC_VERSION_FILE")); extra != "" {
+		files = append(files, extra)
+	}
+	if dir := strings.TrimSpace(os.Getenv("NAGA_DATA_DIR")); dir != "" {
+		files = append(files, filepath.Join(dir, "olcrtc.version"))
+	}
+	return files
 }
 
 // BinaryReady is true when the pinned olcrtc binary sits next to the
@@ -205,7 +219,24 @@ func binaryNames() []string {
 	if runtime.GOOS == "windows" {
 		return []string{"olcrtc.exe", "olcrtc"}
 	}
+	if runtime.GOOS == "android" {
+		return []string{"libolcrtc.so", "olcrtc"}
+	}
 	return []string{"olcrtc"}
+}
+
+func nativeBinaryCandidate() string {
+	dir := strings.TrimSpace(os.Getenv("NAGA_NATIVE_LIB_DIR"))
+	if dir == "" {
+		return ""
+	}
+	for _, name := range binaryNames() {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
 }
 
 func siblingBinary() string {
@@ -236,6 +267,9 @@ func DiscoverBinary(explicit string) (string, error) {
 			return "", ErrBinaryNotFound
 		}
 		return value, nil
+	}
+	if path := nativeBinaryCandidate(); path != "" {
+		return path, nil
 	}
 	if sibling := siblingBinary(); sibling != "" {
 		return sibling, nil

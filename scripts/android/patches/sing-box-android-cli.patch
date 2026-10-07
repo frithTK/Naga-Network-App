@@ -1,0 +1,140 @@
+diff --git a/common/dialer/default_parallel_interface.go b/common/dialer/default_parallel_interface.go
+index 8417f6a..77caec6 100644
+--- a/common/dialer/default_parallel_interface.go
++++ b/common/dialer/default_parallel_interface.go
+@@ -18,7 +18,7 @@ func (d *DefaultDialer) dialParallelInterface(ctx context.Context, dialer net.Di
+ 	if len(primaryInterfaces)+len(fallbackInterfaces) == 0 {
+ 		return nil, false, E.New("no available network interface")
+ 	}
+-	defaultInterface := d.networkManager.InterfaceMonitor().DefaultInterface()
++	defaultInterface := defaultInterfaceOf(d.networkManager)
+ 	if fallbackDelay == 0 {
+ 		fallbackDelay = N.DefaultFallbackDelay
+ 	}
+@@ -92,7 +92,7 @@ func (d *DefaultDialer) dialParallelInterfaceFastFallback(ctx context.Context, d
+ 	if len(primaryInterfaces)+len(fallbackInterfaces) == 0 {
+ 		return nil, false, E.New("no available network interface")
+ 	}
+-	defaultInterface := d.networkManager.InterfaceMonitor().DefaultInterface()
++	defaultInterface := defaultInterfaceOf(d.networkManager)
+ 	if fallbackDelay == 0 {
+ 		fallbackDelay = N.DefaultFallbackDelay
+ 	}
+@@ -153,7 +153,7 @@ func (d *DefaultDialer) listenSerialInterfacePacket(ctx context.Context, listene
+ 	if len(primaryInterfaces)+len(fallbackInterfaces) == 0 {
+ 		return nil, E.New("no available network interface")
+ 	}
+-	defaultInterface := d.networkManager.InterfaceMonitor().DefaultInterface()
++	defaultInterface := defaultInterfaceOf(d.networkManager)
+ 	var errors []error
+ 	for _, primaryInterface := range primaryInterfaces {
+ 		perNetListener := listener
+@@ -182,7 +182,7 @@ func (d *DefaultDialer) listenSerialInterfacePacket(ctx context.Context, listene
+ 
+ func selectInterfaces(networkManager adapter.NetworkManager, strategy C.NetworkStrategy, interfaceType []C.InterfaceType, fallbackInterfaceType []C.InterfaceType) (primaryInterfaces []adapter.NetworkInterface, fallbackInterfaces []adapter.NetworkInterface) {
+ 	interfaces := networkManager.NetworkInterfaces()
+-	myInterfaces := networkManager.InterfaceMonitor().MyInterfaces()
++	myInterfaces := myInterfacesOf(networkManager)
+ 	if len(myInterfaces) > 0 {
+ 		interfaces = common.Filter(interfaces, func(it adapter.NetworkInterface) bool {
+ 			return !common.Contains(myInterfaces, it.Name)
+@@ -191,7 +191,7 @@ func selectInterfaces(networkManager adapter.NetworkManager, strategy C.NetworkS
+ 	switch strategy {
+ 	case C.NetworkStrategyDefault:
+ 		if len(interfaceType) == 0 {
+-			defaultIf := networkManager.InterfaceMonitor().DefaultInterface()
++			defaultIf := defaultInterfaceOf(networkManager)
+ 			if defaultIf != nil {
+ 				for _, iif := range interfaces {
+ 					if iif.Index == defaultIf.Index {
+@@ -216,7 +216,7 @@ func selectInterfaces(networkManager adapter.NetworkManager, strategy C.NetworkS
+ 		}
+ 	case C.NetworkStrategyFallback:
+ 		if len(interfaceType) == 0 {
+-			defaultIf := networkManager.InterfaceMonitor().DefaultInterface()
++			defaultIf := defaultInterfaceOf(networkManager)
+ 			if defaultIf != nil {
+ 				for _, iif := range interfaces {
+ 					if iif.Index == defaultIf.Index {
+@@ -246,3 +246,25 @@ func selectInterfaces(networkManager adapter.NetworkManager, strategy C.NetworkS
+ 	}
+ 	return primaryInterfaces, fallbackInterfaces
+ }
++
++func defaultInterfaceOf(networkManager adapter.NetworkManager) *control.Interface {
++	if networkManager == nil {
++		return nil
++	}
++	monitor := networkManager.InterfaceMonitor()
++	if monitor == nil {
++		return nil
++	}
++	return monitor.DefaultInterface()
++}
++
++func myInterfacesOf(networkManager adapter.NetworkManager) []string {
++	if networkManager == nil {
++		return nil
++	}
++	monitor := networkManager.InterfaceMonitor()
++	if monitor == nil {
++		return nil
++	}
++	return monitor.MyInterfaces()
++}
+diff --git a/protocol/direct/outbound.go b/protocol/direct/outbound.go
+index f316789..fed7ad9 100644
+--- a/protocol/direct/outbound.go
++++ b/protocol/direct/outbound.go
+@@ -94,7 +94,11 @@ func (h *Outbound) fetchMyAddresses() {
+ 	if len(h.myAddresses.Load()) > 0 {
+ 		return
+ 	}
+-	myInterfaceNames := h.network.InterfaceMonitor().MyInterfaces()
++	monitor := h.network.InterfaceMonitor()
++	if monitor == nil {
++		return
++	}
++	myInterfaceNames := monitor.MyInterfaces()
+ 	if len(myInterfaceNames) == 0 {
+ 		return
+ 	}
+diff --git a/route/network.go b/route/network.go
+index da79a8e..c625492 100644
+--- a/route/network.go
++++ b/route/network.go
+@@ -173,23 +173,7 @@ func (r *NetworkManager) Start(stage adapter.StartStage) error {
+ 			}
+ 		}
+ 		if C.IsAndroid && r.platformInterface == nil {
+-			monitor.Start("initialize package manager")
+-			packageManager, err := tun.NewPackageManager(tun.PackageManagerOptions{
+-				Callback: r,
+-				Logger:   r.logger,
+-			})
+-			monitor.Finish()
+-			if err != nil {
+-				return E.Cause(err, "create package manager")
+-			}
+-			monitor.Start("start package manager")
+-			err = packageManager.Start()
+-			monitor.Finish()
+-			if err != nil {
+-				r.logger.Warn("initialize package manager: ", err)
+-			} else {
+-				r.packageManager = packageManager
+-			}
++			r.logger.Info("skip package manager: no platform interface")
+ 		}
+ 	case adapter.StartStatePostStart:
+ 		if r.needWIFIState && !(r.platformInterface != nil && r.platformInterface.UsePlatformWIFIMonitor()) {
+@@ -320,6 +304,9 @@ func (r *NetworkManager) UpdateInterfaces() error {
+ }
+ 
+ func (r *NetworkManager) DefaultNetworkInterface() *adapter.NetworkInterface {
++	if r.interfaceMonitor == nil {
++		return nil
++	}
+ 	iif := r.interfaceMonitor.DefaultInterface()
+ 	if iif == nil {
+ 		return nil
