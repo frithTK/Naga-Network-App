@@ -1,0 +1,42 @@
+name: Quality checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+      - run: go vet ./...
+      - run: go test -race ./core/control ./core/subscription ./core/policy ./core/storage ./core/network ./core/engine/...
+
+  flutter:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.1"
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart analyze
+      - run: flutter test --reporter expanded
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: flutter-golden-differences
+          path: app/test/failures
+          if-no-files-found: ignore

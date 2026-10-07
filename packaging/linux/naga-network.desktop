@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Naga Network
+Comment=Naga Network desktop client
+Exec=naga_network %u
+Icon=naga-mark-red
+Terminal=false
+Categories=Network;
+MimeType=x-scheme-handler/nagavpn;
+StartupNotify=true
+StartupWMClass=eu.nagavpn.naga_network

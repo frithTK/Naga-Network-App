@@ -1,0 +1,39 @@
+name: Windows portable
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.1"
+          channel: stable
+          cache: true
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build portable zip and setup
+        shell: pwsh
+        run: ./scripts/windows/build.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NagaNetwork-windows-x64
+          path: dist/windows/NagaNetwork
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NagaNetwork-windows-x64-setup
+          path: dist/windows/*-setup.exe
+          if-no-files-found: error

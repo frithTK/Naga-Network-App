@@ -1,0 +1,52 @@
+# Secrets and local test configuration
+.env
+.env.*
+!.env.example
+*.secret
+*.token
+tests/local-profiles/
+
+# Flutter/Dart
+.dart_tool/
+.packages
+.pub-cache/
+build/
+.idea/
+*.iml
+
+# Windows launcher resource object (generated during build)
+cmd/naga-windows/*.syso
+cmd/naga-windows/naga-network.ico
+
+# Release artifacts
+/dist/
+
+# Platform builds
+platform/**/build/
+platform/**/dist/
+*.ipa
+*.apk
+*.aab
+*.exe
+*.msix
+
+# Local runtime data
+*.log
+*.db
+*.sqlite
+profiles/
+runtime/
+
+# Tooling and local brand dumps
+graphify-out/
+naga beh/
+docs/testing/audit/
+*.lcov
+cover.out
+
+# Local-only Windows VM helper note and user-supplied diagnostics
+WINDOWS-VM.txt
+*.doc
+
+# Flutter golden test failure output
+**/test/failures/

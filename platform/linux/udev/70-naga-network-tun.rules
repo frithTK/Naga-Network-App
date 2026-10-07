@@ -1,0 +1,2 @@
+# Keep the TUN device inaccessible to unrelated local users.
+KERNEL=="tun", MODE="0660", GROUP="naga-network"
