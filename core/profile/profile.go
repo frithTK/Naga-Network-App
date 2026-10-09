@@ -518,20 +518,12 @@ func ApplyTrafficMode(config []byte, mode policy.TrafficMode) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		rawInbounds, _ := document["inbounds"].([]any)
-		for _, raw := range rawInbounds {
-			inbound, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			if tag, _ := inbound["tag"].(string); tag == "tun-in" {
-				if inboundType, _ := inbound["type"].(string); inboundType == "tun" {
-					inbound["interface_name"] = RuntimeTUNName
-				}
-			}
-		}
+		ensureRuntimeTUNInbound(document)
 		removeUnconditionalQUICReject(document)
 		EnsureLoopbackProxyInbound(document)
+		if runtime.GOOS != "android" {
+			enableLinuxAutoDetectInterface(document)
+		}
 		return json.MarshalIndent(document, "", "  ")
 	}
 	document, err := decodeConfig(config)
@@ -584,6 +576,51 @@ func ApplyTrafficMode(config []byte, mode policy.TrafficMode) ([]byte, error) {
 		}
 	}
 	return json.MarshalIndent(document, "", "  ")
+}
+
+// ensureRuntimeTUNInbound injects the desktop TUN when a Naga envelope omits
+// inbounds. Without it, sing-box starts mixed-only, probes succeed, and
+// systemd-resolved then fails on a missing naga-tun0.
+func ensureRuntimeTUNInbound(document map[string]any) {
+	raw, _ := document["inbounds"].([]any)
+	haveTUN := false
+	for _, item := range raw {
+		inbound, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if inboundType, _ := inbound["type"].(string); inboundType != "tun" {
+			continue
+		}
+		haveTUN = true
+		inbound["interface_name"] = RuntimeTUNName
+	}
+	if haveTUN {
+		return
+	}
+	document["inbounds"] = append([]any{defaultRuntimeTUNInbound()}, raw...)
+}
+
+func enableLinuxAutoDetectInterface(document map[string]any) {
+	route, _ := document["route"].(map[string]any)
+	if route == nil {
+		route = map[string]any{}
+		document["route"] = route
+	}
+	route["auto_detect_interface"] = true
+}
+
+func defaultRuntimeTUNInbound() map[string]any {
+	return map[string]any{
+		"type":           "tun",
+		"tag":            "tun-in",
+		"interface_name": RuntimeTUNName,
+		"address":        []any{"172.19.0.1/30"},
+		"mtu":            1400,
+		"auto_route":     true,
+		"strict_route":   false,
+		"stack":          "gvisor",
+	}
 }
 
 // EnsureLoopbackProxyInbound keeps a loopback mixed inbound next to TUN so

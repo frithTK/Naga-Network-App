@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"runtime"
 
 	"naga.network/core/profile"
 )
@@ -104,6 +105,15 @@ func NormalizeLinuxConfig(config []byte) ([]byte, error) {
 		// This is an Android-only compatibility option and is rejected by the
 		// current Linux sing-box schema.
 		delete(route, "override_android_vpn")
+	}
+	if runtime.GOOS != "android" {
+		if route == nil {
+			route = map[string]any{}
+			document["route"] = route
+		}
+		// Outbound sockets must bind the physical NIC. Otherwise auto_route
+		// captures the default route and probes loop through naga-tun0.
+		route["auto_detect_interface"] = true
 	}
 	normalizeDNS(document, route)
 	normalizeRemoteRuleSets(document)
