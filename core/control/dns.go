@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"net"
 	"os/exec"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ type ResolvedDNSManager struct {
 	Interface string
 	Server    string
 	run       func(args ...string) error
+	waitLink  func(name string) error
 }
 
 func NewResolvedDNSManager() *ResolvedDNSManager {
@@ -45,8 +47,17 @@ func (m *ResolvedDNSManager) Configure() (func() error, error) {
 		}
 		run = runResolvectl
 	}
+	wait := m.waitLink
+	if wait == nil && m.run == nil {
+		wait = waitForNetInterface
+	}
+	if wait != nil {
+		if err := wait(m.Interface); err != nil {
+			return nil, fmt.Errorf("set system DNS server: %w", err)
+		}
+	}
 
-	if err := run("dns", m.Interface, m.Server); err != nil {
+	if err := runWithInterfaceRetry(run, "dns", m.Interface, m.Server); err != nil {
 		return nil, fmt.Errorf("set system DNS server: %w", err)
 	}
 	if err := run("domain", m.Interface, "~."); err != nil {
@@ -66,6 +77,53 @@ func (m *ResolvedDNSManager) Configure() (func() error, error) {
 		}
 		return err
 	}, nil
+}
+
+func runWithInterfaceRetry(run func(args ...string) error, args ...string) error {
+	var err error
+	for attempt := 0; attempt < 20; attempt++ {
+		err = run(args...)
+		if err == nil || !missingResolverInterface(err) {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return err
+}
+
+func missingResolverInterface(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "failed to resolve interface") ||
+		strings.Contains(message, "no such device") ||
+		strings.Contains(message, "нет такого устройства")
+}
+
+func waitForNetInterface(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("system DNS interface is empty")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ifaces, err := net.Interfaces()
+		if err == nil {
+			for _, iface := range ifaces {
+				if iface.Name == name {
+					return nil
+				}
+			}
+		}
+		if !time.Now().Before(deadline) {
+			if err != nil {
+				return fmt.Errorf("интерфейс %s не появился: %w", name, err)
+			}
+			return fmt.Errorf("интерфейс %s не появился", name)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func runResolvectl(args ...string) error {

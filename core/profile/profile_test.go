@@ -2,11 +2,12 @@ package profile
 
 import (
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"naga.network/core/policy"
-	"time"
 )
 
 func TestParseSubscriptionUserinfo(t *testing.T) {
@@ -349,6 +350,47 @@ func TestApplyTrafficModeAddsSystemProxyAndRemovesTUN(t *testing.T) {
 	proxy := inbounds[0].(map[string]any)
 	if proxy["type"] != "mixed" || proxy["tag"] != "naga-system-proxy" || proxy["listen_port"] != float64(SystemProxyPort) {
 		t.Fatalf("system proxy inbound = %#v", proxy)
+	}
+}
+
+func TestApplyTrafficModeInjectsTUNWhenEnvelopeOmitsInbounds(t *testing.T) {
+	config := []byte(`{"outbounds":[{"type":"selector","tag":"Mode","outbounds":["ee"],"default":"ee"},{"type":"vless","tag":"ee"}]}`)
+	updated, err := ApplyTrafficMode(config, policy.TrafficTUN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(updated, &document); err != nil {
+		t.Fatal(err)
+	}
+	var tun map[string]any
+	var haveProxy bool
+	for _, raw := range document["inbounds"].([]any) {
+		item := raw.(map[string]any)
+		switch item["type"] {
+		case "tun":
+			tun = item
+		case "mixed":
+			if item["tag"] == "naga-system-proxy" {
+				haveProxy = true
+			}
+		}
+	}
+	if tun["tag"] != "tun-in" || tun["interface_name"] != RuntimeTUNName {
+		t.Fatalf("injected tun = %#v", tun)
+	}
+	if tun["auto_route"] != true || tun["stack"] != "gvisor" {
+		t.Fatalf("injected tun options = %#v", tun)
+	}
+	route, _ := document["route"].(map[string]any)
+	if runtime.GOOS != "android" && route["auto_detect_interface"] != true {
+		t.Fatalf("auto_detect_interface = %#v", route["auto_detect_interface"])
+	}
+	if !haveProxy {
+		t.Fatal("loopback mixed inbound missing")
+	}
+	if strings.Contains(string(config), RuntimeTUNName) {
+		t.Fatal("source config was unexpectedly changed")
 	}
 }
 

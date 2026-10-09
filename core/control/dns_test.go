@@ -36,6 +36,29 @@ func TestResolvedDNSManagerConfiguresAndRestores(t *testing.T) {
 	}
 }
 
+func TestResolvedDNSManagerRetriesMissingInterface(t *testing.T) {
+	var calls int
+	manager := &ResolvedDNSManager{
+		Interface: "naga-tun0",
+		Server:    "127.0.0.1",
+		run: func(args ...string) error {
+			if len(args) > 0 && args[0] == "dns" {
+				calls++
+				if calls < 3 {
+					return errors.New(`exit status 1: Failed to resolve interface "naga-tun0": Нет такого устройства`)
+				}
+			}
+			return nil
+		},
+	}
+	if _, err := manager.Configure(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatalf("dns attempts = %d", calls)
+	}
+}
+
 func TestResolvedDNSManagerRevertsAfterConfigurationFailure(t *testing.T) {
 	var calls [][]string
 	manager := &ResolvedDNSManager{

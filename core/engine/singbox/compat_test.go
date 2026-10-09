@@ -2,6 +2,7 @@ package singbox
 
 import (
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -439,6 +440,10 @@ func TestNormalizeLinuxConfigUsesCompatibleTUNRuntime(t *testing.T) {
 	}
 	if inbound["mtu"] != float64(9000) {
 		t.Fatalf("unrelated TUN MTU was changed: %#v", inbound["mtu"])
+	}
+	route := document["route"].(map[string]any)
+	if runtime.GOOS != "android" && route["auto_detect_interface"] != true {
+		t.Fatalf("auto_detect_interface = %#v, want true", route["auto_detect_interface"])
 	}
 	if strings.Contains(string(input), "gvisor") {
 		t.Fatal("source config was unexpectedly changed")
