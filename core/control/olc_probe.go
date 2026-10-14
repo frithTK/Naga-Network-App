@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"naga.network/core/policy"
 	"net"
 	"net/http"
-	"path/filepath"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,12 +21,15 @@ import (
 )
 
 const (
-	// HTTP generate_204; HTTPS through SOCKS would inflate the displayed ping.
-	olcProbeURL       = "http://www.gstatic.com/generate_204"
+	// Same HTTPS endpoint/metric as the sing-box outbound URL test.
+	olcProbeURL       = "https://www.gstatic.com/generate_204"
 	olcMeasureTimeout = 24 * time.Second
 )
 
 func (c *RuntimeController) probeOlcRTC(ctx context.Context) (bool, error) {
+	if probeJobFromContext(ctx) != nil {
+		return c.probeOlcRTCJob(ctx)
+	}
 	if c.Store == nil {
 		return false, errors.New("runtime is not configured")
 	}
@@ -124,36 +129,143 @@ func (c *RuntimeController) probeOlcRTCDetached(ctx context.Context, value profi
 	return nil
 }
 
+// Each detached probe owns a private directory and an ephemeral loopback port.
+// Port selection releases the reservation before exec so the child can bind it;
+// a failed startup gets one fresh-port retry, bounded by the same job context.
 func (c *RuntimeController) measureOlcProfile(ctx context.Context, binary, profileID string, cfg *olcprofile.Config) (int, error) {
-	built, err := olcprofile.Build(cfg)
-	if err != nil {
-		return 0, err
+	var last error
+	for attempt := 0; attempt < 2; attempt++ {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return 0, err
+		}
+		port := listener.Addr().(*net.TCPAddr).Port
+		_ = listener.Close()
+		latency, started, err := c.measureOlcAtPort(ctx, binary, cfg, port)
+		if err == nil || started {
+			return latency, err
+		}
+		last = err
 	}
-	dir := filepath.Join(olcprofile.ConfigDir(c.Store.Root, profileID), "probe")
+	return 0, last
+}
+
+func (c *RuntimeController) measureOlcAtPort(ctx context.Context, binary string, cfg *olcprofile.Config, port int) (int, bool, error) {
+	built, err := olcprofile.BuildAtPort(cfg, port)
+	if err != nil {
+		return 0, false, err
+	}
+	dir, err := os.MkdirTemp("", "naga-olcrtc-probe-")
+	if err != nil {
+		return 0, false, err
+	}
+	processOwnsDir := false
+	defer func() {
+		if !processOwnsDir {
+			_ = os.RemoveAll(dir)
+		}
+	}()
 	yamlPath, err := olcprofile.WriteFile(dir, built)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	proc, err := engineolc.Start(ctx, binary, yamlPath)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	defer proc.Stop()
+	processOwnsDir = true
+	defer c.stopOwnedProbeResource(ctx, func() error {
+		err := proc.Stop()
+		if errors.Is(err, engineolc.ErrStopTimeout) {
+			<-proc.Done()
+		}
+		return errors.Join(err, os.RemoveAll(dir))
+	})
+	address := net.JoinHostPort(olcprofile.SOCKSHost, strconv.Itoa(port))
 	readyCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	err = proc.Ready(readyCtx)
+	err = proc.ReadyAt(readyCtx, address)
 	cancel()
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	measureCtx, cancel := context.WithTimeout(ctx, olcMeasureTimeout)
 	defer cancel()
-	return measureSOCKSLatency(measureCtx, net.JoinHostPort(olcprofile.SOCKSHost, fmt.Sprint(olcprofile.SOCKSPort)), olcProbeURL)
+	latency, err := measureSOCKSLatency(measureCtx, address, olcProbeURL)
+	return latency, true, err
+}
+
+func (c *RuntimeController) probeOlcRTCJob(ctx context.Context) (bool, error) {
+	if c.Store == nil {
+		return false, errors.New("runtime is not configured")
+	}
+	values, err := c.Store.List()
+	if err != nil {
+		return false, err
+	}
+	c.mu.Lock()
+	live, liveID, activeTag := c.olcProc != nil, c.profileID, c.activeRuntimeTag
+	c.mu.Unlock()
+	var ran bool
+	for _, value := range values {
+		if ctx.Err() != nil {
+			return ran, ctx.Err()
+		}
+		if value.Subscription.Expired(nowUTC()) {
+			continue
+		}
+		profiles := olcProfiles(value.Config)
+		if len(profiles) == 0 {
+			continue
+		}
+		cfg := &olcprofile.Config{Profiles: profiles}
+		tags := olcprofile.Tags(cfg.Profiles)
+		liveTag := ""
+		if live && liveID == value.ID {
+			liveTag = olcLiveProbeTag(cfg.Profiles, activeTag, value.SelectedMode)
+		}
+		binary, binaryErr := engineolc.DiscoverBinary(c.OlcRTCBinary)
+		for i, item := range cfg.Profiles {
+			if ctx.Err() != nil {
+				return ran, ctx.Err()
+			}
+			candidate := policy.Candidate{ID: olcProbeKey(value.ID, tags[i]), ProfileID: value.ID, SourceTag: tags[i], RuntimeTag: value.ID + "::" + tags[i]}
+			if !item.RuntimeAllowed {
+				c.publishProbePhase(ctx, candidate, "skipped", "unsupported_transport")
+				continue
+			}
+			if tags[i] == liveTag {
+				ran = true
+				c.publishProbePhase(ctx, candidate, "checking", "")
+				latency, err := measureSOCKSLatency(ctx, net.JoinHostPort(olcprofile.SOCKSHost, fmt.Sprint(olcprofile.SOCKSPort)), olcProbeURL)
+				c.publishProbeResult(ctx, candidateProbeResult{candidate: candidate, latency: latency, err: err})
+				continue
+			}
+			if binaryErr != nil {
+				c.publishProbePhase(ctx, candidate, "skipped", "engine_unavailable")
+				continue
+			}
+			ran = true
+			c.publishProbePhase(ctx, candidate, "preparing", "")
+			one := *cfg
+			one.Profiles = []olcprofile.Profile{item}
+			latency, err := c.measureOlcProfile(ctx, binary, value.ID, &one)
+			c.publishProbeResult(ctx, candidateProbeResult{candidate: candidate, latency: latency, err: err})
+		}
+	}
+	return ran, nil
 }
 
 func (c *RuntimeController) recordOlcProbe(profileID, tag string, latency int, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry := ProbeCacheEntry{CheckedAt: time.Now().UTC(), Status: ProbeFailed}
+	c.recordOlcProbeLocked(profileID, tag, latency, err)
+}
+
+func (c *RuntimeController) recordOlcProbeLocked(profileID, tag string, latency int, err error) {
+	entry := ProbeCacheEntry{CheckedAt: time.Now().UTC(), Status: ProbeFailed, ConfigHash: c.runtimeConfigHashes[profileID]}
 	if err == nil && latency > 0 {
 		entry.Status = ProbeHealthy
 		entry.LatencyMS = latency
@@ -165,8 +277,7 @@ func (c *RuntimeController) recordOlcProbe(profileID, tag string, latency int, e
 	if strings.TrimSpace(tag) == "" {
 		tag = olcprofile.NodeTag
 	}
-	c.probeCache[profileID+"::"+tag] = entry
-	c.probeCache[tag] = entry
+	c.probeCache[olcProbeKey(profileID, tag)] = entry
 }
 
 func measureSOCKSLatency(ctx context.Context, socksAddr, rawURL string) (int, error) {
@@ -183,7 +294,11 @@ func measureSOCKSLatency(ctx context.Context, socksAddr, rawURL string) (int, er
 			return dialer.Dial(network, addr)
 		},
 	}
+	defer transport.CloseIdleConnections()
 	client := &http.Client{Timeout: 12 * time.Second, Transport: transport}
+	if probeJobFromContext(ctx) != nil {
+		return measureHTTPMethodLatency(ctx, client, rawURL, http.MethodHead)
+	}
 	return measureWarmHTTPLatency(ctx, client, rawURL)
 }
 
@@ -207,7 +322,11 @@ func measureWarmHTTPLatency(ctx context.Context, client *http.Client, rawURL str
 }
 
 func measureHTTPLatency(ctx context.Context, client *http.Client, rawURL string) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	return measureHTTPMethodLatency(ctx, client, rawURL, http.MethodGet)
+}
+
+func measureHTTPMethodLatency(ctx context.Context, client *http.Client, rawURL, method string) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
 	if err != nil {
 		return 0, err
 	}

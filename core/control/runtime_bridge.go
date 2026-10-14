@@ -43,6 +43,22 @@ func (r *bridgeRuntime) Probe(ctx context.Context, tag string, timeout time.Dura
 	}
 	return 0, errors.New("runtime does not support node probes")
 }
+
+// ProbeOnce preserves the manual list's single-shot contract across the TUN wrapper.
+func (r *bridgeRuntime) ProbeOnce(ctx context.Context, tag string, timeout time.Duration) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if r.bridge != nil {
+		if err := r.bridge.Failure(); err != nil {
+			return 0, err
+		}
+	}
+	if status := r.Runtime.Status(); status == engine.Stopped || status == engine.Failed {
+		return 0, ErrRuntimeNotConnected
+	}
+	return probeOutboundOnce(r.Runtime, ctx, tag, timeout)
+}
 func (r *bridgeRuntime) Details() engine.RuntimeDetails {
 	if reporter, ok := r.Runtime.(engine.DetailReporter); ok {
 		return reporter.Details()

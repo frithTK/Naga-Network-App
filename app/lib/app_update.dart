@@ -11,7 +11,7 @@ const updateChannelName = 'eu.nagavpn.naga_network/update';
 const githubReleasesRepo = 'frithTK/Naga-Network-App';
 const embeddedAppVersion = String.fromEnvironment(
   'NAGA_VERSION',
-  defaultValue: '1.2.6',
+  defaultValue: '1.2.7',
 );
 
 class AppUpdateException implements Exception {

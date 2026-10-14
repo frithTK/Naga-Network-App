@@ -28,11 +28,9 @@ import (
 var ErrBinaryNotConfigured = errors.New("sing-box binary is not configured")
 
 const (
-	// connectivityProbeURL — цель Clash GET /proxies/{tag}/delay.
-	// HTTP generate_204 без лишнего TLS через прокси. Latency — второй
-	// успешный /delay (unified-delay на Clash API). При ошибке второго
-	// замера сохраняется первый.
-	connectivityProbeURL  = "http://www.gstatic.com/generate_204"
+	// Clash measures an HTTPS generate_204 request through the selected outbound.
+	// ProbeOnce issues one /delay; startup/health Probe retain their warm retry.
+	connectivityProbeURL  = "https://www.gstatic.com/generate_204"
 	maxFailureOutputBytes = 64 * 1024
 	maxRuntimeLogLine     = 16 * 1024
 )
@@ -45,6 +43,7 @@ type Adapter struct {
 	Journal      *diagnostics.Logger
 	Starter      processStarter
 	ReadyTimeout time.Duration
+	probeOnly    bool
 }
 
 func (Adapter) Type() engine.Type {
@@ -63,6 +62,13 @@ func (a Adapter) Validate(ctx context.Context, config []byte) error {
 		return nil
 	}
 	return a.checkConfig(ctx, normalized)
+}
+
+// StartProbe owns a temporary config directory, isolated from the VPN session.
+func (a Adapter) StartProbe(ctx context.Context, config []byte) (engine.Runtime, error) {
+	a.ConfigDir = ""
+	a.probeOnly = true
+	return a.Start(ctx, config)
 }
 
 func (a Adapter) Start(ctx context.Context, config []byte) (engine.Runtime, error) {
@@ -105,7 +111,7 @@ func (a Adapter) Start(ctx context.Context, config []byte) (engine.Runtime, erro
 	args := a.Args
 	api := (*runtimeAPI)(nil)
 	if len(args) == 0 {
-		normalized, api, err = prepareRuntimeConfig(normalized)
+		normalized, api, err = prepareRuntimeConfigMode(normalized, a.probeOnly)
 		if err != nil {
 			if removeConfigDir {
 				_ = os.RemoveAll(configDir)
@@ -657,6 +663,7 @@ func (a *runtimeAPI) Close() {
 		if stopCh != nil {
 			close(stopCh)
 		}
+		a.client.CloseIdleConnections()
 	})
 }
 
@@ -887,6 +894,10 @@ func (a *runtimeAPI) ready() bool {
 }
 
 func prepareRuntimeConfig(config []byte) ([]byte, *runtimeAPI, error) {
+	return prepareRuntimeConfigMode(config, false)
+}
+
+func prepareRuntimeConfigMode(config []byte, probeOnly bool) ([]byte, *runtimeAPI, error) {
 	var document map[string]any
 	if err := json.Unmarshal(config, &document); err != nil {
 		return nil, nil, fmt.Errorf("decode runtime config: %w", err)
@@ -906,7 +917,7 @@ func prepareRuntimeConfig(config []byte) ([]byte, *runtimeAPI, error) {
 	// The loopback mixed inbound used for subscription refresh is not a DNS
 	// listener. systemd-resolved still needs dns-in on 127.0.0.1:53 whenever
 	// a TUN interface is the system default route.
-	if shouldPrepareSystemResolver() && (hasTUNInbound(document) || !hasSystemProxyInbound(document)) {
+	if !probeOnly && shouldPrepareSystemResolver() && (hasTUNInbound(document) || !hasSystemProxyInbound(document)) {
 		prepareSystemResolverInbound(document)
 	}
 
@@ -942,8 +953,8 @@ func prepareRuntimeConfig(config []byte) ([]byte, *runtimeAPI, error) {
 			Transport: &http.Transport{
 				Proxy:               nil,
 				MaxIdleConns:        32,
-				MaxIdleConnsPerHost: 16,
-				MaxConnsPerHost:     16,
+				MaxIdleConnsPerHost: 32,
+				MaxConnsPerHost:     32,
 			},
 			Timeout: 800 * time.Millisecond,
 		},

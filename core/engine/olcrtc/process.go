@@ -26,6 +26,7 @@ const (
 )
 
 var ErrBinaryNotFound = errors.New("olcrtc binary was not found")
+var ErrStopTimeout = errors.New("olcrtc process did not stop within the cleanup grace period")
 var ErrVersion = errors.New("olcrtc binary version does not match the pinned commit")
 
 // Command is the running olcrtc process. Tests substitute a loopback double.
@@ -125,25 +126,34 @@ func (c *Command) watch(stderr io.Reader) {
 
 // Ready waits until 127.0.0.1:10808 accepts a connection.
 func (c *Command) Ready(ctx context.Context) error {
+	return c.ReadyAt(ctx, net.JoinHostPort("127.0.0.1", "10808"))
+}
+
+func (c *Command) ReadyAt(ctx context.Context, address string) error {
 	if ctx == nil {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(context.Background(), readyTimeout)
 		defer cancel()
 	}
 	dialer := net.Dialer{}
-	var last error
 	for {
-		conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", "10808"))
+		select {
+		case <-c.done:
+			return errors.New("olcrtc exited before the socks port was ready")
+		default:
+		}
+		conn, err := dialer.DialContext(ctx, "tcp", address)
 		if err == nil {
 			_ = conn.Close()
+			select {
+			case <-c.done:
+				return errors.New("olcrtc exited before the socks port was ready")
+			default:
+			}
 			return nil
 		}
-		last = err
 		select {
 		case <-ctx.Done():
-			if last != nil {
-				return last
-			}
 			return ctx.Err()
 		case <-c.done:
 			return errors.New("olcrtc exited before the socks port was ready")
@@ -171,6 +181,7 @@ func (c *Command) Stop() error {
 	select {
 	case <-c.done:
 	case <-time.After(2 * time.Second):
+		return ErrStopTimeout
 	}
 	return nil
 }

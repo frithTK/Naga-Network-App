@@ -32,7 +32,13 @@ type Document struct {
 
 // Build renders mode:cnc YAML. One profile is flat. Several profiles share
 // crypto, DNS, SOCKS, UDP and lifecycle, with failover in envelope order.
-func Build(cfg *Config) (Document, error) {
+func Build(cfg *Config) (Document, error) { return BuildAtPort(cfg, SOCKSPort) }
+
+// BuildAtPort isolates a temporary probe from the live SOCKS listener.
+func BuildAtPort(cfg *Config, port int) (Document, error) {
+	if port < 1 || port > 65535 {
+		return Document{}, fmt.Errorf("invalid socks port")
+	}
 	if cfg == nil || len(cfg.Profiles) == 0 {
 		return Document{}, fmt.Errorf("%w: profiles", ErrURI)
 	}
@@ -49,9 +55,9 @@ func Build(cfg *Config) (Document, error) {
 		profiles[i] = profile
 	}
 	if len(profiles) == 1 {
-		return Document{Body: flatYAML(profiles[0])}, nil
+		return Document{Body: flatYAML(profiles[0], port)}, nil
 	}
-	return Document{Body: failoverYAML(profiles)}, nil
+	return Document{Body: failoverYAML(profiles, port)}, nil
 }
 
 func runtimeTransport(profile Profile) (string, error) {
@@ -67,7 +73,7 @@ func runtimeTransport(profile Profile) (string, error) {
 	return transport, nil
 }
 
-func flatYAML(profile Profile) string {
+func flatYAML(profile Profile, port int) string {
 	var b strings.Builder
 	b.WriteString("mode: cnc\n")
 	fmt.Fprintf(&b, "auth:\n  provider: %s\n", yamlScalar(profile.Provider))
@@ -77,18 +83,18 @@ func flatYAML(profile Profile) string {
 	fmt.Fprintf(&b, "  transport: %s\n", yamlScalar(profile.Transport))
 	writeParams(&b, "  ", profile.Params)
 	fmt.Fprintf(&b, "  dns: %s\n", yamlQuote(DNS))
-	fmt.Fprintf(&b, "socks:\n  host: %s\n  port: %d\n", yamlQuote(SOCKSHost), SOCKSPort)
+	fmt.Fprintf(&b, "socks:\n  host: %s\n  port: %d\n", yamlQuote(SOCKSHost), port)
 	fmt.Fprintf(&b, "udp:\n  enabled: true\n  max_flows: %d\n", MaxFlows)
 	fmt.Fprintf(&b, "lifecycle:\n  max_session_duration: %s\n", SessionDuration)
 	return b.String()
 }
 
-func failoverYAML(profiles []Profile) string {
+func failoverYAML(profiles []Profile, port int) string {
 	var b strings.Builder
 	b.WriteString("mode: cnc\n")
 	fmt.Fprintf(&b, "crypto:\n  key: %s\n", yamlQuote(profiles[0].Key))
 	fmt.Fprintf(&b, "net:\n  dns: %s\n", yamlQuote(DNS))
-	fmt.Fprintf(&b, "socks:\n  host: %s\n  port: %d\n", yamlQuote(SOCKSHost), SOCKSPort)
+	fmt.Fprintf(&b, "socks:\n  host: %s\n  port: %d\n", yamlQuote(SOCKSHost), port)
 	fmt.Fprintf(&b, "udp:\n  enabled: true\n  max_flows: %d\n", MaxFlows)
 	fmt.Fprintf(&b, "lifecycle:\n  max_session_duration: %s\n", SessionDuration)
 	b.WriteString("profiles:\n")

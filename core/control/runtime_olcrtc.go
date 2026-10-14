@@ -3,6 +3,8 @@ package control
 import (
 	"context"
 	"errors"
+	"net"
+	"strconv"
 	"time"
 
 	"naga.network/core/androidvpn"
@@ -96,10 +98,17 @@ func (c *RuntimeController) startOlcRTCLocked(stage *string, value profile.Profi
 	c.activeRuntimeTag = activeTag
 	c.lastError = ""
 	c.startOlcStatsLocked()
+	probeCtx, probeCancel := context.WithTimeout(c.startupContextLocked(), 15*time.Second)
+	c.olcProbeCancel = probeCancel
+	tag := olcLiveProbeTag(cfg.Profiles, activeTag, value.SelectedMode)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_, _ = c.probeOlcRTC(ctx)
+		defer probeCancel()
+		latency, err := measureSOCKSLatency(probeCtx, net.JoinHostPort(olcprofile.SOCKSHost, strconv.Itoa(olcprofile.SOCKSPort)), olcProbeURL)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.olcProc == proc && probeCtx.Err() == nil && tag != "" {
+			c.recordOlcProbeLocked(value.ID, tag, latency, err)
+		}
 	}()
 	*stage = "complete"
 	return c.snapshotLocked(), nil
@@ -186,6 +195,10 @@ func olcSame(left, right *olcprofile.Config) bool {
 }
 
 func (c *RuntimeController) stopOlcRTCLocked() error {
+	if c.olcProbeCancel != nil {
+		c.olcProbeCancel()
+		c.olcProbeCancel = nil
+	}
 	if c.olcProc == nil && c.activeEngine != profile.EngineOlcRTC && !c.olcLinkOn {
 		return nil
 	}
@@ -220,6 +233,11 @@ func (c *RuntimeController) stopOlcRTCLocked() error {
 // SelectedMode is stored by the caller only after a successful start.
 func (c *RuntimeController) SwitchEngine(profileID, mode string) (snapshot RuntimeSnapshot, resultErr error) {
 	stage := "switch"
+	finish := c.beginProbeTransition()
+	defer finish()
+	if err := c.waitProbeCleanup(context.Background()); err != nil {
+		return c.Status(), err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	value, err := c.Store.Load(profileID)
@@ -271,6 +289,7 @@ func (c *RuntimeController) stopForSwitchLocked() error {
 }
 
 func (c *RuntimeController) startSelectedLocked(stage *string, value profile.Profile) (RuntimeSnapshot, error) {
+	c.runtimeConfigHashes = map[string]string{value.ID: probeConfigHash(value.Config)}
 	if value.Subscription.Expired(nowUTC()) {
 		c.lastError = "profile subscription has expired"
 		return c.snapshotLocked(), errors.New(c.lastError)

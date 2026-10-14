@@ -199,6 +199,10 @@ class UnifiedNode {
     required this.protocol,
     this.latencyMs,
     this.probeStatus = 'unknown',
+    this.checkedAt,
+    this.profileRevision = 0,
+    this.probePhase = '',
+    this.probeReason = '',
   });
 
   final String id;
@@ -209,6 +213,10 @@ class UnifiedNode {
   final String protocol;
   final int? latencyMs;
   final String probeStatus;
+  final DateTime? checkedAt;
+  final int profileRevision;
+  final String probePhase;
+  final String probeReason;
 
   factory UnifiedNode.fromJson(Map<String, dynamic> json) {
     return UnifiedNode(
@@ -220,6 +228,10 @@ class UnifiedNode {
       protocol: json['protocol'] as String? ?? '',
       latencyMs: _jsonIntOrNull(json['latency_ms']),
       probeStatus: json['probe_status'] as String? ?? 'unknown',
+      profileRevision: _jsonIntOrNull(json['profile_revision']) ?? 0,
+      checkedAt: DateTime.tryParse(json['checked_at'] as String? ?? ''),
+      probePhase: json['phase'] as String? ?? '',
+      probeReason: json['reason'] as String? ?? '',
     );
   }
 }
@@ -502,27 +514,120 @@ class ControlHealth {
     this.version = '',
     this.runtimeReady = false,
     this.olcrtcReady = false,
+    this.nodeProbeJobs = false,
   });
 
   final bool ok;
   final String version;
   final bool runtimeReady;
   final bool olcrtcReady;
+  final bool nodeProbeJobs;
 
   factory ControlHealth.fromJson(Map<String, dynamic> json) {
-    return ControlHealth(
-      ok: json['status'] == 'ok',
-      version: json['version'] as String? ?? '',
-      runtimeReady: json['runtime_ready'] as bool? ?? false,
-      olcrtcReady: json['olcrtc_ready'] as bool? ?? false,
-    );
+    try {
+      return ControlHealth(
+        ok: json['status'] == 'ok',
+        version: json['version'] as String? ?? '',
+        runtimeReady: json['runtime_ready'] as bool? ?? false,
+        olcrtcReady: json['olcrtc_ready'] as bool? ?? false,
+        nodeProbeJobs:
+            (json['capabilities']
+                as Map<String, dynamic>?)?['node_probe_jobs'] ==
+            true,
+      );
+    } catch (_) {
+      throw const ControlPlaneException(
+        'Control-plane вернул некорректный ответ.',
+      );
+    }
+  }
+}
+
+class NodeProbeJob {
+  const NodeProbeJob({
+    required this.id,
+    required this.state,
+    required this.revision,
+    required this.nodes,
+    this.total,
+    this.completed = 0,
+    this.cancelled = 0,
+    this.skipped = 0,
+    this.error,
+    this.invalidated = false,
+    this.cleanupComplete = true,
+  });
+  final String id;
+  final String state;
+  final int revision;
+  final List<UnifiedNode> nodes;
+  final int? total;
+  final int completed;
+  final int cancelled;
+  final int skipped;
+  final String? error;
+  final bool invalidated;
+  final bool cleanupComplete;
+  bool get terminal =>
+      cleanupComplete &&
+      const {'completed', 'cancelled', 'timed_out', 'failed'}.contains(state);
+  factory NodeProbeJob.fromJson(Map<String, dynamic> json) {
+    const states = {
+      'preparing',
+      'running',
+      'cancelling',
+      'completed',
+      'cancelled',
+      'timed_out',
+      'failed',
+    };
+    final id = json['job_id'];
+    final state = json['state'];
+    final revision = json['revision'];
+    if (id is! String ||
+        !RegExp(r'^[0-9a-f]{32}$').hasMatch(id) ||
+        !states.contains(state) ||
+        revision is! int ||
+        revision < 1 ||
+        json['nodes'] is! List) {
+      throw const ControlPlaneException(
+        'Некорректный ответ проверки серверов.',
+      );
+    }
+    try {
+      return NodeProbeJob(
+        id: id,
+        state: state as String,
+        revision: revision,
+        total: _jsonIntOrNull(json['total']),
+        completed: _jsonIntOrNull(json['completed']) ?? 0,
+        cancelled: _jsonIntOrNull(json['cancelled']) ?? 0,
+        skipped: _jsonIntOrNull(json['skipped']) ?? 0,
+        error: json['error'] as String?,
+        invalidated: json['invalidated'] == true,
+        cleanupComplete: json['cleanup_complete'] as bool? ?? true,
+        nodes: (json['nodes'] as List)
+            .map((node) => UnifiedNode.fromJson(node as Map<String, dynamic>))
+            .toList(),
+      );
+    } catch (_) {
+      throw const ControlPlaneException(
+        'Некорректный ответ проверки серверов.',
+      );
+    }
   }
 }
 
 class ControlPlaneException implements Exception {
-  const ControlPlaneException(this.message);
+  const ControlPlaneException(
+    this.message, {
+    this.statusCode,
+    this.fullSnapshotRequired = false,
+  });
 
   final String message;
+  final int? statusCode;
+  final bool fullSnapshotRequired;
 
   @override
   String toString() => message;
@@ -844,6 +949,66 @@ class ControlPlaneClient {
     return RuntimeSnapshot.fromJson(payload);
   }
 
+  Future<NodeProbeJob> startNodeProbeJob() async {
+    late http.Response response;
+    try {
+      response = await _client
+          .post(
+            Uri.parse('$_baseUrl/v1/nodes/probe/start'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {
+      throw const ControlPlaneException(
+        'Не удалось запустить проверку серверов.',
+      );
+    }
+    final payload = _decodeResponse(
+      response.statusCode == 409 ? http.Response(response.body, 200) : response,
+    );
+    if (response.statusCode == 409 && payload['job'] is Map<String, dynamic>) {
+      return NodeProbeJob.fromJson(payload['job'] as Map<String, dynamic>);
+    }
+    if (response.statusCode == 409) {
+      throw ControlPlaneException(
+        payload['error'] as String? ?? 'Проверка уже выполняется.',
+        statusCode: 409,
+      );
+    }
+    return NodeProbeJob.fromJson(payload);
+  }
+
+  Future<NodeProbeJob?> nodeProbeJob({
+    String id = 'active',
+    int afterRevision = 0,
+  }) async {
+    final suffix = afterRevision == 0 ? '' : '?after_revision=$afterRevision';
+    late http.Response response;
+    try {
+      response = await _client
+          .get(
+            Uri.parse('$_baseUrl/v1/nodes/probe/jobs/$id$suffix'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {
+      throw const ControlPlaneException(
+        'Не удалось получить прогресс проверки.',
+      );
+    }
+    if (response.statusCode == 200 &&
+        response.body.trim() == 'null' &&
+        id == 'active') {
+      return null;
+    }
+    return NodeProbeJob.fromJson(_decodeResponse(response));
+  }
+
+  Future<NodeProbeJob> cancelNodeProbeJob(String id) async =>
+      NodeProbeJob.fromJson(
+        await _runtimePost('/v1/nodes/probe/jobs/$id/cancel', null),
+      );
+
   Future<List<UnifiedNode>> probeUnifiedNodes() async {
     late http.Response response;
     try {
@@ -866,7 +1031,8 @@ class ControlPlaneClient {
       throw const ControlPlaneException('Включи VPN, чтобы измерить задержку.');
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      final message = _jsonErrorMessage(response.body) ??
+      final message =
+          _jsonErrorMessage(response.body) ??
           'Не удалось проверить доступность серверов.';
       final normalized = message.toLowerCase();
       if (normalized.contains('olcrtc binary') ||
@@ -1054,7 +1220,11 @@ class ControlPlaneClient {
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw ControlPlaneException(
-        payload['error'] as String? ?? 'Операция не выполнена.',
+        payload['error'] is String
+            ? payload['error'] as String
+            : 'Операция не выполнена.',
+        statusCode: response.statusCode,
+        fullSnapshotRequired: payload['full_snapshot_required'] == true,
       );
     }
     return payload;
