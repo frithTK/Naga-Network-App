@@ -58,6 +58,27 @@ func TestBuildRejectsDisabledTransport(t *testing.T) {
 	}
 }
 
+func TestBuildAtPortKeepsLiveDefaultAndIsolatesFlatAndFailover(t *testing.T) {
+	item := Profile{Name: "jitsi", Provider: ProviderJitsi, Transport: TransportDataChannel, Room: "room", Key: testKey, RuntimeAllowed: true}
+	for _, items := range [][]Profile{{item}, {item, item}} {
+		cfg := &Config{Profiles: items}
+		live, err := Build(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		probe, err := BuildAtPort(cfg, 32123)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(live.Body, "port: 10808") || !strings.Contains(probe.Body, "port: 32123") || strings.Contains(probe.Body, "port: 10808") {
+			t.Fatal("probe shares live port")
+		}
+	}
+	if _, err := BuildAtPort(&Config{Profiles: []Profile{item}}, 0); err == nil {
+		t.Fatal("invalid port accepted")
+	}
+}
+
 func TestWriteFileMode(t *testing.T) {
 	dir := t.TempDir()
 	path, err := WriteFile(dir, Document{Body: "mode: cnc\n"})

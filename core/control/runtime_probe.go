@@ -11,6 +11,7 @@ import (
 	"naga.network/core/engine"
 	"naga.network/core/policy"
 	"naga.network/core/profile"
+	awgcfg "naga.network/core/profile/amneziawg"
 )
 
 const (
@@ -22,9 +23,10 @@ const (
 type ProbeStatus string
 
 type ProbeCacheEntry struct {
-	LatencyMS int         `json:"latency_ms,omitempty"`
-	Status    ProbeStatus `json:"status"`
-	CheckedAt time.Time   `json:"checked_at"`
+	LatencyMS  int         `json:"latency_ms,omitempty"`
+	Status     ProbeStatus `json:"status"`
+	CheckedAt  time.Time   `json:"checked_at"`
+	ConfigHash string      `json:"-"`
 }
 
 var (
@@ -41,7 +43,10 @@ const (
 )
 
 func (c *RuntimeController) resetProbeStateLocked() {
+	finish := c.beginProbeTransition()
+	finish()
 	c.probeCache = nil
+	c.runtimeConfigHashes = nil
 	c.runtimeCandidates = nil
 	c.cooldownUntil = nil
 	c.failoverMessage = ""
@@ -60,18 +65,29 @@ func (c *RuntimeController) recordProbeLocked(result candidateProbeResult) {
 	if c.probeCache == nil {
 		c.probeCache = make(map[string]ProbeCacheEntry)
 	}
-	entry := ProbeCacheEntry{CheckedAt: time.Now().UTC(), Status: ProbeFailed}
+	entry := ProbeCacheEntry{CheckedAt: time.Now().UTC(), Status: ProbeFailed, ConfigHash: c.runtimeConfigHashes[result.candidate.ProfileID]}
 	if result.err == nil && result.latency > 0 {
 		entry.Status = ProbeHealthy
 		entry.LatencyMS = result.latency
 	}
 	c.probeCache[key] = entry
+	if result.candidate.ProfileID != "" && result.candidate.SourceTag != "" {
+		c.probeCache[result.candidate.ProfileID+"::"+result.candidate.SourceTag] = entry
+	}
 }
 
 func (c *RuntimeController) ProbeSnapshot() map[string]ProbeCacheEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return cloneProbeCache(c.probeCache)
+	cache := cloneProbeCache(c.probeCache)
+	c.probeMu.Lock()
+	defer c.probeMu.Unlock()
+	for key, entry := range c.manualProbeCache {
+		if previous, ok := cache[key]; !ok || entry.CheckedAt.After(previous.CheckedAt) {
+			cache[key] = entry
+		}
+	}
+	return cache
 }
 
 func cloneProbeCache(src map[string]ProbeCacheEntry) map[string]ProbeCacheEntry {
@@ -99,21 +115,37 @@ func lookupProbeCache(cache map[string]ProbeCacheEntry, keys ...string) (ProbeCa
 }
 
 func probeCacheForCandidate(cache map[string]ProbeCacheEntry, candidate policy.Candidate) (ProbeCacheEntry, bool) {
+	if candidate.Type == "olcrtc" {
+		return lookupProbeCache(cache, olcProbeKey(candidate.ProfileID, candidate.SourceTag))
+	}
 	return lookupProbeCache(
 		cache,
-		candidate.RuntimeTag,
 		candidate.ProfileID+"::"+candidate.SourceTag,
+		candidate.RuntimeTag,
 		candidate.SourceTag,
 	)
 }
 
 func (c *RuntimeController) activeProbeEntryLocked() (ProbeCacheEntry, bool) {
-	if candidate, ok := c.candidateByRuntimeTagLocked(c.activeRuntimeTag); ok {
-		if entry, found := probeCacheForCandidate(c.probeCache, candidate); found {
-			return entry, true
-		}
+	c.probeMu.Lock()
+	defer c.probeMu.Unlock()
+	var health, manual ProbeCacheEntry
+	var healthOK, manualOK bool
+	if c.activeEngine == profile.EngineOlcRTC {
+		key := olcProbeKey(c.profileID, c.activeRuntimeTag)
+		health, healthOK = lookupProbeCache(c.probeCache, key)
+		manual, manualOK = lookupProbeCache(c.manualProbeCache, key)
+	} else if candidate, ok := c.candidateByRuntimeTagLocked(c.activeRuntimeTag); ok {
+		health, healthOK = probeCacheForCandidate(c.probeCache, candidate)
+		manual, manualOK = probeCacheForCandidate(c.manualProbeCache, candidate)
+	} else {
+		health, healthOK = lookupProbeCache(c.probeCache, c.profileID+"::"+c.activeRuntimeTag, c.activeRuntimeTag)
+		manual, manualOK = lookupProbeCache(c.manualProbeCache, c.profileID+"::"+c.activeRuntimeTag, c.activeRuntimeTag)
 	}
-	return lookupProbeCache(c.probeCache, c.activeRuntimeTag)
+	if manualOK && (!healthOK || manual.CheckedAt.After(health.CheckedAt)) {
+		return manual, true
+	}
+	return health, healthOK
 }
 
 func (c *RuntimeController) candidateByRuntimeTagLocked(tag string) (policy.Candidate, bool) {
@@ -214,20 +246,6 @@ func (c *RuntimeController) healthInterval() time.Duration {
 	return policy.HealthProbeInterval
 }
 
-func (c *RuntimeController) stopIdleProbeLocked() {
-	if c.idleProbeRuntime != nil {
-		_ = c.idleProbeRuntime.Stop()
-		c.idleProbeRuntime = nil
-	}
-	for _, sidecar := range c.idleAWGSidecars {
-		if sidecar != nil {
-			_ = sidecar.Stop()
-		}
-	}
-	c.idleAWGSidecars = nil
-	c.idleProbing = false
-}
-
 func (c *RuntimeController) connectedProbeContextLocked() (engine.Runtime, []policy.Candidate, map[string]string, bool) {
 	if c.runtime == nil || c.runtime.Status() != engine.Connected {
 		return nil, nil, nil, false
@@ -237,7 +255,7 @@ func (c *RuntimeController) connectedProbeContextLocked() (engine.Runtime, []pol
 
 // ProbeNodes measures every candidate in parallel. When VPN is already
 // connected it uses the live Clash API. When VPN is off it starts a
-// temporary sing-box without TUN, runs the same HTTP generate_204 checks,
+// temporary sing-box without TUN, runs the same HTTPS generate_204 checks,
 // then stops the process so the system VPN stays down. An active olcRTC
 // tunnel is measured through its SOCKS port instead of sing-box.
 //
@@ -245,51 +263,87 @@ func (c *RuntimeController) connectedProbeContextLocked() (engine.Runtime, []pol
 // netlink route sockets, and stock sing-box panics. Ping there needs an
 // already running VPN (Clash API) or an olcRTC session.
 func (c *RuntimeController) ProbeNodes(parent context.Context) error {
+	job, _, err := c.startProbeJob()
+	if err != nil {
+		return err
+	}
+	select {
+	case <-job.done:
+		return job.err
+	case <-parent.Done():
+		_, _ = c.CancelProbeJob(job.snapshot.JobID)
+		<-job.done
+		return parent.Err()
+	}
+}
+
+func (c *RuntimeController) runProbeNodes(parent context.Context) error {
+	if err := parent.Err(); err != nil {
+		return err
+	}
+	type olcResult struct {
+		ran bool
+		err error
+	}
+	olc := make(chan olcResult, 1)
+	go func() { ran, err := c.probeOlcRTC(parent); olc <- olcResult{ran, err} }()
+	err := c.runSingBoxProbeNodes(parent)
+	result := <-olc
+	if parent.Err() != nil {
+		return parent.Err()
+	}
+	if errors.Is(err, ErrNoProbeProfiles) || errors.Is(err, ErrRuntimeNotConnected) {
+		if result.ran {
+			return result.err
+		}
+	}
+	if err != nil {
+		return err
+	}
+	return result.err
+}
+
+func (c *RuntimeController) runSingBoxProbeNodes(parent context.Context) error {
+	if err := parent.Err(); err != nil {
+		return err
+	}
 	c.mu.Lock()
-	olcOn := c.olcProc != nil
 	if runtime, candidates, aliases, ok := c.connectedProbeContextLocked(); ok {
+		hashes := cloneStringMap(c.runtimeConfigHashes)
 		c.mu.Unlock()
+		currentHashes := map[string]string{}
+		if values, err := c.Store.List(); err == nil {
+			currentHashes = probeProfileHashes(values)
+		}
 		if all := c.allListCandidates(); len(all) > 0 {
-			candidates = all
+			candidates = nil
+			for _, candidate := range all {
+				if candidate.Type == "olcrtc" {
+					continue
+				}
+				if _, loaded := aliases[candidate.ProfileID+"::"+candidate.SourceTag]; !loaded ||
+					(hashes[candidate.ProfileID] != "" && hashes[candidate.ProfileID] != currentHashes[candidate.ProfileID]) {
+					c.publishProbePhase(parent, candidate, "skipped", "runtime_requires_reload")
+					continue
+				}
+				candidates = append(candidates, candidate)
+			}
 		}
-		err := c.probeWithRuntime(parent, runtime, candidates, aliases)
-		if olcOn {
-			_, _ = c.probeOlcRTC(parent)
+		if len(candidates) == 0 {
+			return nil
 		}
-		return err
+		return c.probeWithRuntime(parent, runtime, candidates, aliases)
 	}
-	if olcOn {
-		c.mu.Unlock()
-		_, err := c.probeOlcRTC(parent)
-		return err
-	}
-	if c.idleProbing {
-		c.mu.Unlock()
-		return ErrProbeInProgress
-	}
+	c.mu.Unlock()
 	if !idleSingBoxProbeSupported() {
-		c.mu.Unlock()
-		olcRan, olcErr := c.probeOlcRTC(parent)
-		if olcRan {
-			return olcErr
+		for _, candidate := range c.allListCandidates() {
+			if candidate.Type != "olcrtc" {
+				c.publishProbePhase(parent, candidate, "skipped", "vpn_required")
+			}
 		}
 		return ErrRuntimeNotConnected
 	}
-	c.idleProbing = true
-	c.mu.Unlock()
-
-	err := c.probeIdle(parent)
-	c.mu.Lock()
-	c.stopIdleProbeLocked()
-	c.mu.Unlock()
-	olcRan, olcErr := c.probeOlcRTC(parent)
-	if errors.Is(err, ErrNoProbeProfiles) && !olcRan {
-		return ErrNoProbeProfiles
-	}
-	if err == nil || errors.Is(err, ErrNoProbeProfiles) {
-		return olcErr
-	}
-	return err
+	return c.probeIdle(parent)
 }
 
 func idleSingBoxProbeSupported() bool {
@@ -336,27 +390,107 @@ func (c *RuntimeController) probeIdle(parent context.Context) error {
 			return err
 		}
 	}
-	config, candidates, err = c.attachIdleAmneziaWG(config, aliases, candidates, awg, len(singBox) > 0)
-	if err != nil && config == nil {
+	// Standard transports start independently of slow AWG handshakes.
+	awgDone := make(chan error, 1)
+	go func() { awgDone <- c.probeIdleAWG(parent, awg, len(singBox) > 0) }()
+	var standardErr error
+	if len(candidates) > 0 && config != nil {
+		config, standardErr = profile.PrepareLatencyProbeConfig(config)
+		if standardErr == nil {
+			standardErr = c.probeOwnedRuntime(parent, config, candidates, aliases)
+		}
+	}
+	awgErr := <-awgDone
+	if parent.Err() != nil {
+		return parent.Err()
+	}
+	if standardErr != nil {
+		return standardErr
+	}
+	return awgErr
+}
+
+func (c *RuntimeController) probeOwnedRuntime(ctx context.Context, config []byte, candidates []policy.Candidate, aliases map[string]string) (resultErr error) {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if config == nil || len(candidates) == 0 {
-		return ErrNoProbeProfiles
+	config = c.materializeIdleRuleSets(ctx, config)
+	var runtime engine.Runtime
+	var err error
+	if starter, ok := c.Adapter.(interface {
+		StartProbe(context.Context, []byte) (engine.Runtime, error)
+	}); ok {
+		runtime, err = starter.StartProbe(ctx, config)
+	} else {
+		runtime, err = c.Adapter.Start(ctx, config)
 	}
-	config = c.materializeIdleRuleSets(parent, config)
-	runtime, err := c.Adapter.Start(parent, config)
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	if live, liveCandidates, liveAliases, ok := c.connectedProbeContextLocked(); ok {
-		c.mu.Unlock()
-		_ = runtime.Stop()
-		return c.probeWithRuntime(parent, live, liveCandidates, liveAliases)
+	defer func() { resultErr = errors.Join(resultErr, c.stopOwnedProbeResource(ctx, runtime.Stop)) }()
+	return c.probeWithRuntime(ctx, runtime, candidates, aliases)
+}
+
+func (c *RuntimeController) probeIdleAWG(ctx context.Context, values []profile.Profile, namespaced bool) error {
+	jobs := make(chan profile.Profile)
+	var wg sync.WaitGroup
+	// Keep native sidecar/process concurrency conservative until stand measurements.
+	for i := 0; i < 1 && i < len(values); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for value := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				c.probeOneIdleAWG(ctx, value, namespaced)
+			}
+		}()
 	}
-	c.idleProbeRuntime = runtime
-	c.mu.Unlock()
-	return c.probeWithRuntime(parent, runtime, candidates, aliases)
+	for _, value := range values {
+		select {
+		case jobs <- value:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return ctx.Err()
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	return ctx.Err()
+}
+
+func (c *RuntimeController) probeOneIdleAWG(ctx context.Context, value profile.Profile, namespaced bool) {
+	candidate := amneziaCandidate(value)
+	if namespaced {
+		candidate = amneziaUnifiedCandidate(value)
+	}
+	c.publishProbePhase(ctx, candidate, "preparing", "")
+	stage := "idle_amneziawg"
+	leaf, sidecar, err := c.startAWGSidecarContext(ctx, &stage, value)
+	if err != nil {
+		c.publishProbeResult(ctx, candidateProbeResult{candidate: candidate, err: err})
+		return
+	}
+	defer c.stopOwnedProbeResource(ctx, sidecar.Stop)
+	host, port, err := parseLoopbackAddr(sidecar.ListenAddr())
+	var config []byte
+	if err == nil {
+		config, err = awgcfg.BuildRuntimeJSON(host, port, leaf.dns)
+	}
+	if err == nil && namespaced {
+		config, err = awgcfg.InjectSOCKSLeaf(config, host, port, candidate.RuntimeTag)
+	}
+	if err == nil {
+		config, err = profile.PrepareLatencyProbeConfig(config)
+	}
+	if err == nil {
+		err = c.probeOwnedRuntime(ctx, config, []policy.Candidate{candidate}, map[string]string{candidate.RuntimeTag: candidate.RuntimeTag})
+	}
+	if err != nil {
+		c.publishProbeResult(ctx, candidateProbeResult{candidate: candidate, err: err})
+	}
 }
 
 func (c *RuntimeController) probeWithRuntime(parent context.Context, runtime engine.Runtime, candidates []policy.Candidate, aliases map[string]string) error {
@@ -375,7 +509,10 @@ func (c *RuntimeController) probeWithRuntime(parent context.Context, runtime eng
 
 	results := make(chan candidateProbeResult, len(candidates))
 	jobs := make(chan policy.Candidate)
-	workers := probeConcurrency
+	workers := c.manualProbeConcurrency()
+	if job := probeJobFromContext(parent); job != nil {
+		workers = job.snapshot.Concurrency.SingBox
+	}
 	if workers > len(candidates) {
 		workers = len(candidates)
 	}
@@ -385,16 +522,22 @@ func (c *RuntimeController) probeWithRuntime(parent context.Context, runtime eng
 		go func() {
 			defer wg.Done()
 			for candidate := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				c.publishProbePhase(ctx, candidate, "checking", "")
 				timeout := probeTimeoutFor(candidate, nodeListProbeTimeout)
 				tag := clashProbeTag(candidate, aliases)
-				latency, err := probeOutboundOnce(runtime, ctx, tag, timeout)
+				probeCtx, probeCancel := context.WithTimeout(ctx, timeout)
+				latency, err := probeOutboundOnce(runtime, probeCtx, tag, timeout)
+				probeCancel()
 				results <- candidateProbeResult{candidate: candidate, latency: latency, err: err}
 			}
 		}()
 	}
 	go func() {
 		defer close(jobs)
-		for _, candidate := range candidates {
+		for _, candidate := range fairProbeQueue(candidates) {
 			select {
 			case jobs <- candidate:
 			case <-ctx.Done():
@@ -407,31 +550,56 @@ func (c *RuntimeController) probeWithRuntime(parent context.Context, runtime eng
 		close(results)
 	}()
 
-	collected := make([]candidateProbeResult, 0, len(candidates))
 	for result := range results {
-		collected = append(collected, result)
+		c.publishProbeResult(ctx, result)
 	}
+	return ctx.Err()
+}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	seen := make(map[string]struct{}, len(collected))
-	for _, result := range collected {
-		c.recordProbeLocked(result)
-		if id := strings.TrimSpace(result.candidate.ID); id != "" {
-			seen[id] = struct{}{}
-		}
+func (c *RuntimeController) manualProbeConcurrency() int {
+	limit := maxManualProbeConcurrency()
+	value := c.ManualProbeConcurrency
+	if value <= 0 {
+		value = probeConcurrency
 	}
+	if value > limit {
+		value = limit
+	}
+	return value
+}
+
+func maxManualProbeConcurrency() int {
+	if goruntime.GOOS == "android" || goruntime.GOOS == "ios" {
+		return 10
+	}
+	return 20
+}
+
+// Alternate profiles so a long list cannot fill every slot before another
+// subscription gets its first measurement.
+func fairProbeQueue(candidates []policy.Candidate) []policy.Candidate {
+	groups := map[string][]policy.Candidate{}
+	var order []string
 	for _, candidate := range candidates {
-		id := strings.TrimSpace(candidate.ID)
-		if id == "" {
-			id = strings.TrimSpace(candidate.RuntimeTag)
+		if _, exists := groups[candidate.ProfileID]; !exists {
+			order = append(order, candidate.ProfileID)
 		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		c.recordProbeLocked(candidateProbeResult{candidate: candidate, err: ctx.Err()})
+		groups[candidate.ProfileID] = append(groups[candidate.ProfileID], candidate)
 	}
-	return nil
+	queue := make([]policy.Candidate, 0, len(candidates))
+	for len(order) > 0 {
+		next := order[:0]
+		for _, id := range order {
+			group := groups[id]
+			queue = append(queue, group[0])
+			if len(group) > 1 {
+				groups[id] = group[1:]
+				next = append(next, id)
+			}
+		}
+		order = next
+	}
+	return queue
 }
 
 func probeOutboundOnce(runtime engine.Runtime, ctx context.Context, outbound string, timeout time.Duration) (int, error) {

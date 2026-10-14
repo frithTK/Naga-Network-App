@@ -36,24 +36,25 @@ type RuntimeController struct {
 	Journal  *diagnostics.Logger
 	RuleSets *ruleset.Resolver
 
-	operationMu     sync.Mutex
-	startCancel     context.CancelFunc
-	stopPending     int
-	startContext    context.Context // protected by mu
-	mu              sync.Mutex
-	cacheMu         sync.Mutex
-	cachedSnapshot  RuntimeSnapshot
-	startInProgress atomic.Bool
-	runtime         engine.Runtime
-	runtimeCancel   context.CancelFunc
-	recoveryContext context.Context
-	recoveryCancel  context.CancelFunc
-	profileID       string
-	runtimeAliases  map[string]string
-	lastError       string
-	dnsRestore      func() error
-	proxyRestore    func() error
-	SystemProxy     SystemProxyManager
+	operationMu         sync.Mutex
+	startCancel         context.CancelFunc
+	stopPending         int
+	startContext        context.Context // protected by mu
+	mu                  sync.Mutex
+	cacheMu             sync.Mutex
+	cachedSnapshot      RuntimeSnapshot
+	startInProgress     atomic.Bool
+	runtime             engine.Runtime
+	runtimeCancel       context.CancelFunc
+	recoveryContext     context.Context
+	recoveryCancel      context.CancelFunc
+	profileID           string
+	runtimeAliases      map[string]string
+	runtimeConfigHashes map[string]string
+	lastError           string
+	dnsRestore          func() error
+	proxyRestore        func() error
+	SystemProxy         SystemProxyManager
 	// NetworkClass is injected by the platform runtime. Keeping it as a
 	// callback lets Linux and mobile implementations update the policy without
 	// making the domain layer depend on a particular network manager.
@@ -61,11 +62,24 @@ type RuntimeController struct {
 	// HealthInterval and HealthFailThreshold override policy defaults in tests.
 	HealthInterval      time.Duration
 	HealthFailThreshold int
+	// ManualProbeConcurrency is bounded to 20 on desktop and 10 on mobile.
+	// Zero retains the measured baseline of eight until native stand checks.
+	ManualProbeConcurrency int
+	probeBudget            time.Duration // test override; includes preparation and all transports
+	probeCleanupBudget     time.Duration // test override for owned cleanup grace
 	// AWGFactory builds the userspace AmneziaWG sidecar. Tests inject a
 	// loopback double; production uses netstack + SOCKS5.
 	AWGFactory awgengine.Factory
 
-	probeCache        map[string]ProbeCacheEntry
+	probeCache map[string]ProbeCacheEntry
+	// Lock order is mu -> probeMu. Job workers only take probeMu to publish;
+	// cancellation and progress never wait for the runtime/mutation locks.
+	probeMu           sync.Mutex
+	probeJob          *nodeProbeJob
+	lastProbeJob      *nodeProbeJob
+	probeGeneration   uint64
+	probeTransitions  int
+	manualProbeCache  map[string]ProbeCacheEntry
 	runtimeCandidates []policy.Candidate
 	cooldownUntil     map[string]time.Time
 	failoverMessage   string
@@ -74,6 +88,7 @@ type RuntimeController struct {
 	lastObservedClass policy.NetworkClass
 	awgSidecars       []awgengine.Sidecar
 	olcProc           *engineolc.Command
+	olcProbeCancel    context.CancelFunc
 	androidBridge     *androidvpn.Bridge
 	olcHevDone        chan struct{}
 	olcFailed         bool
@@ -94,9 +109,6 @@ type RuntimeController struct {
 	awgSkipReasons    map[string]error
 	sessionIDs        map[string]struct{}
 	activeEngine      profile.Engine
-	idleProbeRuntime  engine.Runtime
-	idleAWGSidecars   []awgengine.Sidecar
-	idleProbing       bool
 	connectionMode    policy.ConnectionMode
 	startingOverlay   bool
 	inspect           *RuntimeInspect
@@ -201,6 +213,11 @@ func (c *RuntimeController) Start(profileID string) (snapshot RuntimeSnapshot, r
 			startCancel()
 		}
 	}()
+	finishProbeTransition := c.beginProbeTransition()
+	defer finishProbeTransition()
+	if err := c.waitProbeCleanup(startContext); err != nil {
+		return c.snapshot(), err
+	}
 	c.startInProgress.Store(true)
 	defer c.startInProgress.Store(false)
 	c.mu.Lock()
@@ -235,7 +252,6 @@ func (c *RuntimeController) startHoldingLock(
 	connectionPolicy policy.ConnectionPolicy,
 	routing policy.RoutingPolicy,
 ) (RuntimeSnapshot, error) {
-	c.stopIdleProbeLocked()
 	if c.olcProc != nil {
 		if c.profileID == profileID {
 			return c.snapshotLocked(), nil
@@ -271,12 +287,14 @@ func (c *RuntimeController) startHoldingLock(
 		return c.snapshotLocked(), errors.New(c.lastError)
 	}
 	if olcShouldStart(value) {
+		c.runtimeConfigHashes = map[string]string{value.ID: probeConfigHash(value.Config)}
 		return c.startOlcRTCLocked(stage, value)
 	}
 	activeValues := c.activeStoredProfilesLocked()
 	if len(activeValues) == 0 {
 		activeValues = []profile.Profile{value}
 	}
+	c.runtimeConfigHashes = probeProfileHashes(activeValues)
 	singBox := profile.SingBoxProfiles(activeValues)
 	awg := profile.AmneziaWGProfiles(activeValues)
 	if len(singBox) > 0 {
@@ -528,6 +546,11 @@ func (c *RuntimeController) monitorRuntime(ctx context.Context, profileID string
 }
 
 func (c *RuntimeController) restartAfterFailure(ctx context.Context, profileID string, failed engine.Runtime) (RuntimeSnapshot, error) {
+	finish := c.beginProbeTransition()
+	defer finish()
+	if err := c.waitProbeCleanup(ctx); err != nil {
+		return c.Status(), err
+	}
 	c.mu.Lock()
 	if c.runtime != failed || c.profileID != profileID || failed.Status() != engine.Failed {
 		snapshot := c.snapshotLocked()
@@ -577,6 +600,7 @@ func (c *RuntimeController) effectiveNetworkClassLocked(stored policy.NetworkCla
 // the controller lock is acquired. The barrier also prevents rollback/reconnect
 // from starting a replacement while a stop request is waiting for cleanup.
 func (c *RuntimeController) prepareStop() func() {
+	finishProbeTransition := c.beginProbeTransition()
 	c.operationMu.Lock()
 	c.stopPending++
 	if c.startCancel != nil {
@@ -584,6 +608,7 @@ func (c *RuntimeController) prepareStop() func() {
 	}
 	c.operationMu.Unlock()
 	return func() {
+		finishProbeTransition()
 		c.operationMu.Lock()
 		c.stopPending--
 		c.operationMu.Unlock()
@@ -600,6 +625,7 @@ func (c *RuntimeController) startupContextLocked() context.Context {
 func (c *RuntimeController) Stop() (snapshot RuntimeSnapshot, resultErr error) {
 	finishStop := c.prepareStop()
 	defer finishStop()
+	probeCleanupErr := c.waitProbeCleanup(context.Background())
 	startedAt := time.Now()
 	if c.Journal != nil {
 		c.Journal.Info("runtime", "stop_requested", "Запрошена остановка VPN", nil)
@@ -615,6 +641,7 @@ func (c *RuntimeController) Stop() (snapshot RuntimeSnapshot, resultErr error) {
 			c.Journal.Info("runtime", "stop_completed", "VPN runtime остановлен", fields)
 		}()
 	}
+	defer func() { resultErr = errors.Join(resultErr, probeCleanupErr) }()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.startAborted = true
@@ -625,7 +652,6 @@ func (c *RuntimeController) Stop() (snapshot RuntimeSnapshot, resultErr error) {
 		c.lastError = safeRuntimeError(err)
 		return c.snapshotLocked(), err
 	}
-	c.stopIdleProbeLocked()
 	if c.recoveryCancel != nil {
 		c.recoveryCancel()
 		c.recoveryCancel = nil

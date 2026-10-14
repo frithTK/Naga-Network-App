@@ -2,6 +2,7 @@ package olcrtc
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -9,6 +10,29 @@ import (
 	"testing"
 	"time"
 )
+
+func TestReadyAtUsesProbePortAndHonorsCancellationAndProcessExit(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	proc := &Command{done: make(chan struct{})}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := proc.ReadyAt(ctx, listener.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, stop := context.WithCancel(context.Background())
+	stop()
+	if err := proc.ReadyAt(cancelled, "127.0.0.1:0"); !errors.Is(err, context.Canceled) {
+		t.Fatal("readiness lost cancellation", err)
+	}
+	close(proc.done)
+	if err := proc.ReadyAt(ctx, listener.Addr().String()); err == nil {
+		t.Fatal("dead child accepted another process listener")
+	}
+}
 
 func TestVersionAndReady(t *testing.T) {
 	if runtime.GOOS == "windows" {

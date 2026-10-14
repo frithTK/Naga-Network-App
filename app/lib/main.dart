@@ -10,6 +10,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'android_vpn.dart';
 import 'app_update.dart';
 import 'control_plane_client.dart';
+import 'node_probe_controller.dart';
 import 'config_file_picker.dart';
 import 'subscription_fetch.dart';
 import 'subscription_link.dart';
@@ -2135,6 +2136,7 @@ class _DashboardPageState extends State<DashboardPage>
   String? _trafficModeError;
   bool? _controlPlaneReachable;
   late final ControlPlaneClient _controlPlane;
+  late final NodeProbeController _nodeProbe;
   AppUpdater? _updater;
   String _uiVersion = embeddedAppVersion;
   String _controlVersion = '';
@@ -2152,6 +2154,8 @@ class _DashboardPageState extends State<DashboardPage>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _controlPlane = widget.controlPlane ?? ControlPlaneClient();
+    _nodeProbe = NodeProbeController(_controlPlane)
+      ..addListener(_onNodeProbeChanged);
     _updater = AppUpdater(currentVersion: _uiVersion);
     _trayChannel.setMethodCallHandler(_handleTrayMethod);
     unawaited(_startDashboard());
@@ -2212,11 +2216,14 @@ class _DashboardPageState extends State<DashboardPage>
     _runtimePoller?.cancel();
     _profileUpdater?.cancel();
     _updater?.close();
+    _nodeProbe.removeListener(_onNodeProbeChanged);
+    _nodeProbe.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _nodeProbe.setForeground(state == AppLifecycleState.resumed);
     if (state == AppLifecycleState.resumed) {
       unawaited(_refreshAndroidInstallStatus());
     }
@@ -2711,9 +2718,23 @@ class _DashboardPageState extends State<DashboardPage>
     await _selectMode(autoTag);
   }
 
+  void _onNodeProbeChanged() {
+    if (mounted && _nodeProbe.nodes.isNotEmpty) {
+      setState(
+        () => _unifiedNodes = nagaMergeProbedNodes(
+          _nodeProbe.nodes,
+          _unifiedNodes,
+        ),
+      );
+    }
+  }
+
   Future<List<UnifiedNode>> _probeUnifiedNodes() async {
     try {
-      final nodes = await _controlPlane.probeUnifiedNodes();
+      final probed = await _nodeProbe.start();
+      final nodes = _nodeProbe.job?.invalidated == true
+          ? await _controlPlane.listUnifiedNodes()
+          : probed;
       RuntimeSnapshot? runtime;
       try {
         runtime = await _controlPlane.runtimeStatus();
@@ -2769,6 +2790,7 @@ class _DashboardPageState extends State<DashboardPage>
                       }
                     : null,
                 onProbe: _hasProfile ? _probeUnifiedNodes : null,
+                probeController: _nodeProbe,
               ),
             ),
           ),
@@ -3778,6 +3800,7 @@ class _DashboardPageState extends State<DashboardPage>
                             onSelect: _selectUnifiedNode,
                             onSelectAuto: _hasProfile ? _selectAutoNode : null,
                             onProbe: _hasProfile ? _probeUnifiedNodes : null,
+                            probeController: _nodeProbe,
                             networkClass:
                                 _effectiveConnectionPolicy.networkClass,
                           ),
@@ -4182,6 +4205,8 @@ String nagaNodePingLabel(UnifiedNode node) {
   if (node.probeStatus == 'failed') {
     return 'нет ответа';
   }
+  if (node.probePhase == 'cancelled') return 'отмена';
+  if (node.probePhase == 'skipped') return 'пропуск';
   return '—';
 }
 
@@ -4263,13 +4288,17 @@ int? nagaHomeLatencyMs({
 }
 
 UnifiedNode nagaPreferProbedNode(UnifiedNode incoming, UnifiedNode? probed) {
-  if (probed == null) {
+  if (probed == null || incoming.profileRevision != probed.profileRevision)
     return incoming;
-  }
-  if (incoming.probeStatus == 'healthy' || incoming.probeStatus == 'failed') {
-    return incoming;
-  }
-  if (probed.probeStatus == 'healthy' || probed.probeStatus == 'failed') {
+  final incomingMeasured =
+      incoming.probeStatus == 'healthy' || incoming.probeStatus == 'failed';
+  final previousMeasured =
+      probed.probeStatus == 'healthy' || probed.probeStatus == 'failed';
+  final older =
+      probed.checkedAt != null &&
+      (incoming.checkedAt == null ||
+          incoming.checkedAt!.isBefore(probed.checkedAt!));
+  if (previousMeasured && (!incomingMeasured || older)) {
     return UnifiedNode(
       id: incoming.id,
       profileId: incoming.profileId,
@@ -4279,6 +4308,10 @@ UnifiedNode nagaPreferProbedNode(UnifiedNode incoming, UnifiedNode? probed) {
       protocol: incoming.protocol,
       latencyMs: probed.latencyMs,
       probeStatus: probed.probeStatus,
+      checkedAt: probed.checkedAt,
+      profileRevision: incoming.profileRevision,
+      probePhase: incoming.probePhase,
+      probeReason: incoming.probeReason,
     );
   }
   return incoming;
@@ -4305,6 +4338,7 @@ class NagaNodesView extends StatefulWidget {
     required this.onSelect,
     this.onSelectAuto,
     this.onProbe,
+    this.probeController,
     this.showClose = false,
     this.networkClass = 'unknown',
   });
@@ -4314,6 +4348,7 @@ class NagaNodesView extends StatefulWidget {
   final ValueChanged<UnifiedNode> onSelect;
   final VoidCallback? onSelectAuto;
   final Future<List<UnifiedNode>> Function()? onProbe;
+  final NodeProbeController? probeController;
   final bool showClose;
   final String networkClass;
 
@@ -4323,7 +4358,32 @@ class NagaNodesView extends StatefulWidget {
 
 class _NagaNodesViewState extends State<NagaNodesView> {
   String _query = '';
-  bool _probing = false;
+  List<UnifiedNode>? _rankingNodes;
+  bool _wasProbing = false;
+  bool _localProbing = false;
+  bool get _probing => _localProbing || (widget.probeController?.busy ?? false);
+
+  @override
+  void initState() {
+    super.initState();
+    widget.probeController?.addListener(_probeChanged);
+    widget.probeController?.attach();
+  }
+
+  void _probeChanged() {
+    if (!_wasProbing && _probing) _rankingNodes = List.of(_nodes);
+    if (!_probing) _rankingNodes = null;
+    _wasProbing = _probing;
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    widget.probeController?.removeListener(_probeChanged);
+    widget.probeController?.detach();
+    super.dispose();
+  }
+
   List<UnifiedNode>? _probed;
 
   List<UnifiedNode> get _nodes => _probed ?? widget.nodes;
@@ -4331,6 +4391,12 @@ class _NagaNodesViewState extends State<NagaNodesView> {
   @override
   void didUpdateWidget(covariant NagaNodesView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.probeController != widget.probeController) {
+      oldWidget.probeController?.removeListener(_probeChanged);
+      oldWidget.probeController?.detach();
+      widget.probeController?.addListener(_probeChanged);
+      widget.probeController?.attach();
+    }
     if (_probed == null) {
       return;
     }
@@ -4342,7 +4408,10 @@ class _NagaNodesViewState extends State<NagaNodesView> {
     if (onProbe == null || _probing) {
       return;
     }
-    setState(() => _probing = true);
+    setState(() {
+      _rankingNodes = List.of(_nodes);
+      _localProbing = true;
+    });
     try {
       final nodes = await onProbe();
       if (mounted) {
@@ -4352,7 +4421,10 @@ class _NagaNodesViewState extends State<NagaNodesView> {
       // The caller shows a user-facing error; keep the last known list.
     } finally {
       if (mounted) {
-        setState(() => _probing = false);
+        setState(() {
+          _localProbing = false;
+          _rankingNodes = null;
+        });
       }
     }
   }
@@ -4370,8 +4442,15 @@ class _NagaNodesViewState extends State<NagaNodesView> {
               node.protocol.toLowerCase().contains(query);
         })
         .toList(growable: false);
+    final visibleById = {for (final node in visible) node.id: node};
     final recommended = query.isEmpty
-        ? recommendedUnifiedNodes(visible, network: widget.networkClass)
+        ? recommendedUnifiedNodes(
+                _rankingNodes ?? visible,
+                network: widget.networkClass,
+              )
+              .where((node) => visibleById.containsKey(node.id))
+              .map((node) => visibleById[node.id]!)
+              .toList(growable: false)
         : const <UnifiedNode>[];
     final recommendedIds = {for (final node in recommended) node.id};
     final groupedNodes = query.isEmpty
@@ -4428,7 +4507,15 @@ class _NagaNodesViewState extends State<NagaNodesView> {
             Align(
               alignment: Alignment.centerRight,
               child: OutlinedButton.icon(
-                onPressed: _probing ? null : _probe,
+                onPressed: _probing
+                    ? (widget.probeController?.job != null &&
+                              !const {
+                                'cancelling',
+                                'failed',
+                              }.contains(widget.probeController?.job?.state)
+                          ? () => unawaited(widget.probeController!.cancel())
+                          : null)
+                    : _probe,
                 icon: _probing
                     ? const SizedBox(
                         width: 16,
@@ -4436,10 +4523,30 @@ class _NagaNodesViewState extends State<NagaNodesView> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.speed_rounded),
-                label: Text(_probing ? 'Проверяем…' : 'Проверить'),
+                label: Text(
+                  _probing
+                      ? (const {
+                              'cancelling',
+                              'failed',
+                            }.contains(widget.probeController?.job?.state)
+                            ? 'Завершаем проверку…'
+                            : 'Отменить проверку')
+                      : 'Проверить',
+                ),
               ),
             ),
           ],
+          if (_probing && widget.probeController?.job != null)
+            Text(
+              widget.probeController!.job!.state == 'preparing'
+                  ? 'Подготавливаем проверку…'
+                  : 'Готово: ${widget.probeController!.job!.completed} из ${widget.probeController!.job!.total ?? '…'}',
+            ),
+          if (widget.probeController?.progressError != null)
+            Text(
+              widget.probeController!.progressError!,
+              style: const TextStyle(color: _muted),
+            ),
           const SizedBox(height: 16),
         ],
         if (widget.nodes.isEmpty)
@@ -4506,6 +4613,22 @@ class _NagaNodesViewState extends State<NagaNodesView> {
     final title = nagaNodeTitle(node);
     final protocol = nagaNodeProtocolLabel(node);
     final ping = nagaNodePingLabel(node);
+    final checked = node.checkedAt?.toLocal();
+    final explanation = switch (node.probeReason) {
+      'runtime_requires_reload' =>
+        'Профиль изменился. Переподключите VPN для проверки.',
+      'vpn_required' => 'Включите VPN для проверки на этой платформе.',
+      'engine_unavailable' => 'Движок этого протокола недоступен.',
+      'timeout' => 'Сервер не ответил за отведённое время.',
+      'cancelled' => 'Проверка отменена.',
+      'timed_out' => 'Истёк общий срок проверки.',
+      _ => '',
+    };
+    final pingTooltip = [
+      if (explanation.isNotEmpty) explanation,
+      if (checked != null && checked.year > 2000)
+        'Последний замер: ${checked.day}.${checked.month}.${checked.year} ${checked.hour.toString().padLeft(2, '0')}:${checked.minute.toString().padLeft(2, '0')}',
+    ].join('\n');
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
       child: Row(
@@ -4543,26 +4666,36 @@ class _NagaNodesViewState extends State<NagaNodesView> {
             ),
           ),
           const SizedBox(width: 12),
-          SizedBox(
-            width: 56,
-            child: _probing
-                ? const Center(
-                    child: SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+          Tooltip(
+            message: pingTooltip,
+            child: SizedBox(
+              width: 56,
+              child:
+                  _probing &&
+                      (node.probePhase.isEmpty ||
+                          const {
+                            'queued',
+                            'preparing',
+                            'checking',
+                          }.contains(node.probePhase))
+                  ? const Center(
+                      child: SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : Text(
+                      ping,
+                      maxLines: 1,
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                        color: _muted,
+                        fontSize: 13,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
                     ),
-                  )
-                : Text(
-                    ping,
-                    maxLines: 1,
-                    textAlign: TextAlign.right,
-                    style: const TextStyle(
-                      color: _muted,
-                      fontSize: 13,
-                      fontFeatures: [FontFeature.tabularFigures()],
-                    ),
-                  ),
+            ),
           ),
           const SizedBox(width: 12),
           SizedBox(
@@ -6389,6 +6522,7 @@ class _NodesPage extends StatelessWidget {
     required this.onSelect,
     this.onSelectAuto,
     this.onProbe,
+    this.probeController,
     this.networkClass = 'unknown',
   });
 
@@ -6397,6 +6531,7 @@ class _NodesPage extends StatelessWidget {
   final ValueChanged<UnifiedNode> onSelect;
   final VoidCallback? onSelectAuto;
   final Future<List<UnifiedNode>> Function()? onProbe;
+  final NodeProbeController? probeController;
   final String networkClass;
 
   @override
@@ -6413,6 +6548,7 @@ class _NodesPage extends StatelessWidget {
         onSelect: onSelect,
         onSelectAuto: onSelectAuto,
         onProbe: onProbe,
+        probeController: probeController,
         networkClass: networkClass,
       ),
     );

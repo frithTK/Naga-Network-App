@@ -181,6 +181,10 @@ type awgLeaf struct {
 }
 
 func (c *RuntimeController) startAWGSidecar(stage *string, value profile.Profile) (awgLeaf, awgengine.Sidecar, error) {
+	return c.startAWGSidecarContext(c.startupContextLocked(), stage, value)
+}
+
+func (c *RuntimeController) startAWGSidecarContext(ctx context.Context, stage *string, value profile.Profile) (awgLeaf, awgengine.Sidecar, error) {
 	*stage = "parse_amneziawg"
 	cfg, err := awgcfg.Parse(value.Config)
 	if err != nil {
@@ -188,15 +192,15 @@ func (c *RuntimeController) startAWGSidecar(stage *string, value profile.Profile
 	}
 	*stage = "sidecar_start"
 	sidecar := c.newAWGSidecar()
-	if err := sidecar.Start(c.startupContextLocked(), cfg); err != nil {
-		_ = sidecar.Stop()
+	if err := sidecar.Start(ctx, cfg); err != nil {
+		_ = c.stopOwnedProbeResource(ctx, sidecar.Stop)
 		return awgLeaf{}, nil, err
 	}
-	readyCtx, cancelReady := context.WithTimeout(c.startupContextLocked(), handshakeReadyTimeout)
+	readyCtx, cancelReady := context.WithTimeout(ctx, handshakeReadyTimeout)
 	err = sidecar.Ready(readyCtx)
 	cancelReady()
 	if err != nil {
-		_ = sidecar.Stop()
+		_ = c.stopOwnedProbeResource(ctx, sidecar.Stop)
 		return awgLeaf{}, nil, err
 	}
 	return awgLeaf{dns: cfg.DNS}, sidecar, nil
@@ -704,70 +708,6 @@ func addAmneziaAliases(aliases map[string]string, profileID, runtimeTag string, 
 	if mapBareLeaf {
 		aliases[awgcfg.LeafTag] = runtimeTag
 	}
-}
-
-func (c *RuntimeController) attachIdleAmneziaWG(
-	config []byte,
-	aliases map[string]string,
-	candidates []policy.Candidate,
-	awg []profile.Profile,
-	namespaced bool,
-) ([]byte, []policy.Candidate, error) {
-	if len(awg) == 0 {
-		return config, candidates, nil
-	}
-	stage := "idle_amneziawg"
-	var lastErr error
-	for _, value := range awg {
-		candidate := amneziaCandidate(value)
-		if namespaced {
-			candidate = amneziaUnifiedCandidate(value)
-		}
-		leaf, sidecar, err := c.startAWGSidecar(&stage, value)
-		if err != nil {
-			lastErr = err
-			c.recordIdleProbeFailure(candidate, err)
-			continue
-		}
-		host, port, err := parseLoopbackAddr(sidecar.ListenAddr())
-		if err != nil {
-			lastErr = err
-			_ = sidecar.Stop()
-			c.recordIdleProbeFailure(candidate, err)
-			continue
-		}
-		next := config
-		if next == nil {
-			next, err = awgcfg.BuildRuntimeJSON(host, port, leaf.dns)
-			if err == nil {
-				next, err = profile.ApplyTrafficMode(next, policy.TrafficSystemProxy)
-			}
-		} else {
-			next, err = awgcfg.InjectSOCKSLeaf(next, host, port, candidate.RuntimeTag)
-		}
-		if err != nil {
-			lastErr = err
-			_ = sidecar.Stop()
-			c.recordIdleProbeFailure(candidate, err)
-			continue
-		}
-		config = next
-		addAmneziaAliases(aliases, value.ID, candidate.RuntimeTag, !namespaced)
-		candidates = append(candidates, candidate)
-		c.mu.Lock()
-		c.idleAWGSidecars = append(c.idleAWGSidecars, sidecar)
-		c.mu.Unlock()
-	}
-	if config == nil {
-		return nil, candidates, lastErr
-	}
-	return config, candidates, nil
-}
-
-func (c *RuntimeController) recordIdleProbeFailure(candidate policy.Candidate, err error) {
-	c.mu.Lock()
-	c.recordProbeLocked(candidateProbeResult{candidate: candidate, err: err})
-	c.mu.Unlock()
 }
 
 func parseLoopbackAddr(addr string) (string, int, error) {

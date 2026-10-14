@@ -48,3 +48,6 @@ func olcShouldStart(value profile.Profile) bool {
 	}
 	return value.Engine == profile.EngineOlcRTC && strings.TrimSpace(value.SelectedMode) == ""
 }
+
+// An engine prefix keeps equally named sing-box and olcRTC rows distinct.
+func olcProbeKey(profileID, tag string) string { return "olcrtc/" + profileID + "::" + tag }

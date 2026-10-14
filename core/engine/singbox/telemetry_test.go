@@ -14,9 +14,9 @@ import (
 	"naga.network/core/profile"
 )
 
-func TestConnectivityProbeURLUsesHTTPGenerate204(t *testing.T) {
-	if connectivityProbeURL != "http://www.gstatic.com/generate_204" {
-		t.Fatalf("probe URL = %q, want HTTP generate_204", connectivityProbeURL)
+func TestConnectivityProbeURLUsesHTTPSGenerate204(t *testing.T) {
+	if connectivityProbeURL != "https://www.gstatic.com/generate_204" {
+		t.Fatalf("probe URL = %q, want HTTPS generate_204", connectivityProbeURL)
 	}
 }
 

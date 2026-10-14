@@ -47,11 +47,12 @@ type Server struct {
 }
 
 type healthResponse struct {
-	Service      string `json:"service"`
-	Status       string `json:"status"`
-	Version      string `json:"version"`
-	RuntimeReady bool   `json:"runtime_ready"`
-	OlcRTCReady  bool   `json:"olcrtc_ready"`
+	Service      string          `json:"service"`
+	Status       string          `json:"status"`
+	Version      string          `json:"version"`
+	RuntimeReady bool            `json:"runtime_ready"`
+	OlcRTCReady  bool            `json:"olcrtc_ready"`
+	Capabilities map[string]bool `json:"capabilities"`
 }
 
 func (s Server) healthVersion() string {
@@ -151,14 +152,16 @@ type ProfileNodes struct {
 }
 
 type UnifiedNodeSummary struct {
-	ID          string `json:"id"`
-	ProfileID   string `json:"profile_id"`
-	Tag         string `json:"tag"`
-	RuntimeTag  string `json:"runtime_tag"`
-	Country     string `json:"country,omitempty"`
-	Protocol    string `json:"protocol,omitempty"`
-	LatencyMS   int    `json:"latency_ms,omitempty"`
-	ProbeStatus string `json:"probe_status,omitempty"`
+	ProfileRevision int64     `json:"profile_revision,omitempty"`
+	ID              string    `json:"id"`
+	ProfileID       string    `json:"profile_id"`
+	Tag             string    `json:"tag"`
+	RuntimeTag      string    `json:"runtime_tag"`
+	Country         string    `json:"country,omitempty"`
+	Protocol        string    `json:"protocol,omitempty"`
+	LatencyMS       int       `json:"latency_ms,omitempty"`
+	ProbeStatus     string    `json:"probe_status,omitempty"`
+	CheckedAt       time.Time `json:"checked_at,omitempty"`
 }
 
 type diagnosticsLogResponse struct {
@@ -225,9 +228,22 @@ func (s Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		finishStop := s.Runtime.prepareStop()
 		defer finishStop()
 	}
+	if s.Runtime != nil && r.Method != http.MethodGet &&
+		(strings.HasPrefix(r.URL.Path, "/v1/profiles/") || r.URL.Path == "/v1/policy" || r.URL.Path == "/v1/routing" || strings.HasPrefix(r.URL.Path, "/v1/apps")) {
+		finish := s.Runtime.beginProbeTransition()
+		defer finish()
+		if err := s.Runtime.waitProbeCleanup(r.Context()); err != nil {
+			if errors.Is(err, ErrProbeCleanupTimeout) {
+				writeError(w, http.StatusConflict, err.Error())
+				return
+			}
+			writeError(w, http.StatusRequestTimeout, "request cancelled")
+			return
+		}
+	}
 	if r.Method != http.MethodGet &&
 		!(r.Method == http.MethodPost && r.URL.Path == "/v1/subscriptions/preview") &&
-		!(r.Method == http.MethodPost && r.URL.Path == "/v1/nodes/probe") {
+		!strings.HasPrefix(r.URL.Path, "/v1/nodes/probe") {
 		unlock := s.lockMutation()
 		defer unlock()
 	}
@@ -240,6 +256,7 @@ func (s Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Version:      s.healthVersion(),
 			RuntimeReady: s.RuntimeReady,
 			OlcRTCReady:  s.OlcRTCReady,
+			Capabilities: map[string]bool{"node_probe_jobs": s.Runtime != nil},
 		})
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/diagnostics/logs":
 		s.diagnosticsLogs(w, r)
@@ -253,6 +270,8 @@ func (s Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.listProfiles(w)
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/nodes":
 		s.listUnifiedNodes(w)
+	case r.URL.Path == "/v1/nodes/probe/start" || strings.HasPrefix(r.URL.Path, "/v1/nodes/probe/jobs/"):
+		s.serveProbeJobs(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/nodes/probe":
 		s.probeUnifiedNodes(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/policy":
@@ -1216,7 +1235,7 @@ func olcNodeCandidates(value profile.Profile) []policy.Candidate {
 		}
 		meta := profile.NodeMetadata(tag, "olcrtc")
 		candidates = append(candidates, policy.Candidate{
-			ID:         value.ID + "::" + tag,
+			ID:         olcProbeKey(value.ID, tag),
 			ProfileID:  value.ID,
 			SourceTag:  tag,
 			RuntimeTag: tag,
@@ -1252,22 +1271,34 @@ func olcNodeSummaries(raw []byte, selected string) []NodeSummary {
 func (s Server) writeUnifiedNodes(w http.ResponseWriter, candidates []policy.Candidate) {
 	nodes := make([]UnifiedNodeSummary, 0, len(candidates))
 	cache := map[string]ProbeCacheEntry{}
+	hashes := map[string]string{}
+	revisions := map[string]int64{}
+	if s.Storage != nil {
+		if values, err := s.Storage.List(); err == nil {
+			hashes = probeProfileHashes(values)
+			for _, value := range values {
+				revisions[value.ID] = value.Revision
+			}
+		}
+	}
 	if s.Runtime != nil {
 		cache = s.Runtime.ProbeSnapshot()
 	}
 	for _, candidate := range candidates {
 		node := UnifiedNodeSummary{
-			ID:          candidate.ID,
-			ProfileID:   candidate.ProfileID,
-			Tag:         candidate.SourceTag,
-			RuntimeTag:  candidate.RuntimeTag,
-			Country:     candidate.Country,
-			Protocol:    candidate.Protocol,
-			ProbeStatus: string(ProbeUnknown),
+			ProfileRevision: revisions[candidate.ProfileID],
+			ID:              candidate.ID,
+			ProfileID:       candidate.ProfileID,
+			Tag:             candidate.SourceTag,
+			RuntimeTag:      candidate.RuntimeTag,
+			Country:         candidate.Country,
+			Protocol:        candidate.Protocol,
+			ProbeStatus:     string(ProbeUnknown),
 		}
-		if entry, ok := probeCacheForCandidate(cache, candidate); ok {
+		if entry, ok := probeCacheForCandidate(cache, candidate); ok && (entry.ConfigHash == "" || entry.ConfigHash == hashes[candidate.ProfileID]) {
 			node.ProbeStatus = string(entry.Status)
 			node.LatencyMS = entry.LatencyMS
+			node.CheckedAt = entry.CheckedAt
 		}
 		nodes = append(nodes, node)
 	}
