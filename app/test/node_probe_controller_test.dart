@@ -59,6 +59,116 @@ Future<void> pumpUntil(WidgetTester tester, bool Function() ready) async {
 }
 
 void main() {
+  testWidgets('late full snapshot cannot reverse acknowledged cancellation', (
+    tester,
+  ) async {
+    final cancelReply = Completer<http.Response>();
+    final staleReply = Completer<http.Response>();
+    var reads = 0;
+    final controller = NodeProbeController(
+      ControlPlaneClient(
+        client: MockClient((request) async {
+          if (request.url.path == '/v1/health') return health();
+          if (request.url.path.endsWith('/start'))
+            return snapshot('running', 99, [], status: 202);
+          if (request.url.path.endsWith('/cancel')) return cancelReply.future;
+          reads++;
+          if (reads == 1)
+            return http.Response(
+              '{"error":"invalid revision","full_snapshot_required":true}',
+              400,
+            );
+          if (reads == 2) return staleReply.future;
+          return snapshot('cancelled', 101, []);
+        }),
+      ),
+    );
+    controller.attach();
+    final result = controller.start();
+    await pumpUntil(tester, () => controller.progressError != null);
+    final cancel = controller.cancel();
+    await pumpUntil(tester, () => reads == 2);
+    cancelReply.complete(snapshot('cancelling', 100, []));
+    await tester.pump();
+    await cancel;
+    staleReply.complete(snapshot('running', 2, []));
+    await tester.pump();
+    expect(controller.job?.state, 'cancelling');
+    await pumpUntil(tester, () => controller.job?.terminal == true);
+    await result;
+    controller.detach();
+    controller.dispose();
+  });
+
+  testWidgets('queued rows do not create hundreds of animation tickers', (
+    tester,
+  ) async {
+    final controller =
+        NodeProbeController(
+            ControlPlaneClient(
+              client: MockClient((_) async => snapshot('running', 1, [])),
+            ),
+          )
+          ..job = const NodeProbeJob(
+            id: jobId,
+            state: 'running',
+            revision: 1,
+            nodes: [],
+            total: 200,
+          );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: NagaNodesView(
+              nodes: [
+                for (var i = 0; i < 200; i++)
+                  UnifiedNode.fromJson(node('queue$i', 'queued')),
+              ],
+              connected: false,
+              onSelect: (_) {},
+              onProbe: controller.start,
+              probeController: controller,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+  });
+
+  testWidgets('unchanged progress does not repeatedly notify list consumers', (
+    tester,
+  ) async {
+    var reads = 0;
+    var changes = 0;
+    final controller = NodeProbeController(
+      ControlPlaneClient(
+        client: MockClient((request) async {
+          if (request.url.path == '/v1/health') return health();
+          if (request.method == 'POST')
+            return snapshot('running', 1, [], status: 202);
+          reads++;
+          return snapshot('running', 2, [
+            node('fast', 'healthy', latency: 25),
+          ], completed: 1);
+        }),
+      ),
+    );
+    controller.addListener(() {
+      if (controller.job?.revision == 2) changes++;
+    });
+    controller.attach();
+    controller.start().ignore();
+    await pumpUntil(tester, () => reads >= 3);
+    expect(changes, 1);
+    controller.detach();
+    controller.dispose();
+  });
+
   testWidgets('cleanup failure retains the job until its resources close', (
     tester,
   ) async {
@@ -218,20 +328,15 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: AnimatedBuilder(
-              animation: controller,
-              builder: (context, _) => NagaNodesView(
-                nodes: controller.nodes.isEmpty
-                    ? [
-                        UnifiedNode.fromJson(node('fast', 'queued')),
-                        UnifiedNode.fromJson(node('slow', 'queued')),
-                      ]
-                    : controller.nodes,
-                connected: false,
-                onSelect: (_) {},
-                onProbe: controller.start,
-                probeController: controller,
-              ),
+            body: NagaNodesView(
+              nodes: [
+                UnifiedNode.fromJson(node('fast', 'queued')),
+                UnifiedNode.fromJson(node('slow', 'queued')),
+              ],
+              connected: false,
+              onSelect: (_) {},
+              onProbe: controller.start,
+              probeController: controller,
             ),
           ),
         ),

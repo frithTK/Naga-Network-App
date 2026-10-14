@@ -565,6 +565,7 @@ void main() {
     await tester.tap(find.text('Проверить'));
     await tester.pump();
     expect(find.byType(CircularProgressIndicator), findsNWidgets(4));
+    expect(find.text('Проверяем…'), findsOneWidget);
     pending.complete(const [
       UnifiedNode(
         id: 'vless',
