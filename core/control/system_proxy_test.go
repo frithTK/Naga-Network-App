@@ -94,8 +94,8 @@ func TestGSettingsNativeSerializationInPrivateBackend(t *testing.T) {
 	before := corporateProxy()
 	for key, value := range before {
 		parts := strings.Split(key, "/")
-		if _, err := run("set", parts[0], parts[1], value); err != nil {
-			t.Fatal(err)
+		if output, err := run("set", parts[0], parts[1], value); err != nil {
+			t.Fatalf("set %s: %v: %s", key, err, output)
 		}
 	}
 	restore, err := (&GSettingsSystemProxy{run: run}).Configure("127.0.0.1", 2080)

@@ -338,6 +338,7 @@ func TestImportOlcRTCURIAndBrokenEnvelopeField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = journal.Close() })
 	api := Server{Storage: &store, Journal: journal}
 	key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	uri := "olcrtc://jitsi?datachannel@https://meet.example/room#" + key + "$Naga"
