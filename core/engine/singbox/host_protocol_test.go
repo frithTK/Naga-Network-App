@@ -55,3 +55,19 @@ func TestStaleWintunCleanupScriptRejectsInjection(t *testing.T) {
 		}
 	}
 }
+
+func TestTunHostRejectsCallerOutputPathsAndEnvironment(t *testing.T) {
+	for _, input := range []string{
+		`{"config_path":"profile.json","binary_path":"sing-box.exe","log_path":"protected-file"}`,
+		`{"config_path":"profile.json","binary_path":"sing-box.exe","env":["PATH=attacker"]}`,
+		`{"config_path":"profile.json","binary_path":"sing-box.exe","env":["ENABLE_DEPRECATED_LEGACY_DNS_SERVERS=false"]}`,
+		`{"config_path":"` + strings.Repeat("x", 64<<10) + `","binary_path":"sing-box.exe"}`,
+	} {
+		if _, err := decodeTunHostRequest(strings.NewReader(input)); err == nil {
+			t.Fatal("accepted privileged write/environment control")
+		}
+	}
+	if _, err := decodeTunHostRequest(strings.NewReader(`{"config_path":"profile.json","binary_path":"sing-box.exe","env":["ENABLE_DEPRECATED_LEGACY_DNS_SERVERS=true"]}`)); err != nil {
+		t.Fatal(err)
+	}
+}

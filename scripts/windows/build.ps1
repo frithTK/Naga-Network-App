@@ -1,6 +1,10 @@
 ﻿#Requires -Version 5.1
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$env:GOTOOLCHAIN = "go1.27.2"
+$BuildTemp = Join-Path $env:TEMP ("naga-build-" + [guid]::NewGuid().ToString("n"))
+New-Item -ItemType Directory -Path $BuildTemp | Out-Null
+try {
 
 $ProjectDir = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $AppDir = Join-Path $ProjectDir "app"
@@ -58,11 +62,11 @@ $env:GOOS = "windows"
 $env:GOARCH = "amd64"
 try {
     $ControlLdFlags = "-s -w -X naga.network/core/version.Version=$Version"
-    go build -buildvcs=false -ldflags $ControlLdFlags -o (Join-Path $env:TEMP "naga-control.exe") (Join-Path $ProjectDir "cmd\naga-control")
+    go build -buildvcs=false -ldflags $ControlLdFlags -o (Join-Path $BuildTemp "naga-control.exe") (Join-Path $ProjectDir "cmd\naga-control")
     if ($LASTEXITCODE -ne 0) { throw "go build naga-control failed" }
 
     Write-Host "Сборка naga-update.exe..."
-    go build -buildvcs=false -ldflags "-s -w" -o (Join-Path $env:TEMP "naga-update.exe") (Join-Path $ProjectDir "cmd\naga-update")
+    go build -buildvcs=false -ldflags "-s -w" -o (Join-Path $BuildTemp "naga-update.exe") (Join-Path $ProjectDir "cmd\naga-update")
     if ($LASTEXITCODE -ne 0) { throw "go build naga-update failed" }
 
     Write-Host "Сборка лаунчера NagaNetwork.exe..."
@@ -73,7 +77,7 @@ try {
     try {
         go run github.com/tc-hib/go-winres@latest simply --arch amd64 --manifest gui --icon naga-network.ico --product-name "Naga Network" --file-description "Naga Network"
         if ($LASTEXITCODE -ne 0) { throw "go-winres failed" }
-        go build -buildvcs=false -ldflags "-s -w -H windowsgui" -o (Join-Path $env:TEMP "NagaNetwork.exe") .
+        go build -buildvcs=false -ldflags "-s -w -H windowsgui" -o (Join-Path $BuildTemp "NagaNetwork.exe") .
         if ($LASTEXITCODE -ne 0) { throw "go build naga-windows failed" }
     } finally {
         Pop-Location
@@ -111,9 +115,9 @@ if (Test-Path $DistDir) {
 }
 New-Item -ItemType Directory -Path $DistDir | Out-Null
 Copy-Item -Recurse -Force (Join-Path $Bundle "*") $DistDir
-Copy-Item -Force (Join-Path $env:TEMP "naga-control.exe") (Join-Path $DistDir "naga-control.exe")
-Copy-Item -Force (Join-Path $env:TEMP "NagaNetwork.exe") (Join-Path $DistDir "NagaNetwork.exe")
-Copy-Item -Force (Join-Path $env:TEMP "naga-update.exe") (Join-Path $DistDir "naga-update.exe")
+Copy-Item -Force (Join-Path $BuildTemp "naga-control.exe") (Join-Path $DistDir "naga-control.exe")
+Copy-Item -Force (Join-Path $BuildTemp "NagaNetwork.exe") (Join-Path $DistDir "NagaNetwork.exe")
+Copy-Item -Force (Join-Path $BuildTemp "naga-update.exe") (Join-Path $DistDir "naga-update.exe")
 
 function Find-VCRedistCRT {
     if (-not ${env:ProgramFiles(x86)}) {
@@ -169,32 +173,48 @@ function Fetch-VerifiedZip([string]$Url, [string]$Sha256, [string]$OutFile) {
 
 function Install-NagaRuntime([string]$DistDir) {
     $SingBoxVersion = "1.13.20"
-    $SingBoxUrl = "https://github.com/SagerNet/sing-box/releases/download/v$SingBoxVersion/sing-box-$SingBoxVersion-windows-amd64.zip"
-    $SingBoxSha = "f2eb3d17bd183d143ef764c8f08c5625a93e628ec4eced24276ed6e9210fb296"
+    $SingBoxCommit = "56f91dfeabd6f4edbd437dfcc1e5b0ebc856b778"
     $WintunUrl = "https://www.wintun.net/builds/wintun-0.14.1.zip"
     $WintunSha = "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
 
     $work = Join-Path $env:TEMP ("naga-runtime-" + [guid]::NewGuid().ToString("n"))
     New-Item -ItemType Directory -Path $work | Out-Null
     try {
-        $sbZip = Join-Path $work "sing-box.zip"
         $wtZip = Join-Path $work "wintun.zip"
-        Fetch-VerifiedZip $SingBoxUrl $SingBoxSha $sbZip
         Fetch-VerifiedZip $WintunUrl $WintunSha $wtZip
 
         $sbDir = Join-Path $work "sing-box"
         $wtDir = Join-Path $work "wintun"
-        Expand-Archive -LiteralPath $sbZip -DestinationPath $sbDir
         Expand-Archive -LiteralPath $wtZip -DestinationPath $wtDir
 
-        $sbExe = Get-ChildItem $sbDir -Recurse -Filter "sing-box.exe" | Select-Object -First 1
-        if (-not $sbExe) { throw "sing-box.exe не найден в архиве" }
+        Assert-Command git
+        Assert-Command python
+        git init $sbDir | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "sing-box source init failed" }
+        git -C $sbDir fetch --depth 1 https://github.com/SagerNet/sing-box.git $SingBoxCommit | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "sing-box source fetch failed" }
+        git -C $sbDir checkout --detach FETCH_HEAD | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "sing-box source checkout failed" }
+        python (Join-Path $ProjectDir "scripts\runtime\apply-singbox-security-deps.py") $sbDir
+        if ($LASTEXITCODE -ne 0) { throw "sing-box dependency fixes failed" }
+        $sbExe = Join-Path $work "sing-box.exe"
+        $oldCgo = $env:CGO_ENABLED
+        try {
+            $env:CGO_ENABLED = "0"
+            go build -C $sbDir -trimpath -buildvcs=false `
+                -tags "with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_clash_api,http2legacy" `
+                -ldflags "-s -w -checklinkname=0 -X github.com/sagernet/sing-box/constant.Version=$SingBoxVersion" `
+                -o $sbExe ./cmd/sing-box
+            if ($LASTEXITCODE -ne 0) { throw "sing-box security build failed" }
+        } finally {
+            if ($null -eq $oldCgo) { Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue } else { $env:CGO_ENABLED = $oldCgo }
+        }
         $wtDll = Get-ChildItem $wtDir -Recurse -Filter "wintun.dll" |
             Where-Object { $_.FullName -match '\\bin\\amd64\\wintun\.dll$' } |
             Select-Object -First 1
         if (-not $wtDll) { throw "wintun.dll amd64 не найден в архиве" }
 
-        Copy-Item -Force $sbExe.FullName (Join-Path $DistDir "sing-box.exe")
+        Copy-Item -Force $sbExe (Join-Path $DistDir "sing-box.exe")
         Copy-Item -Force $wtDll.FullName (Join-Path $DistDir "wintun.dll")
 
         $sbLicense = Get-ChildItem $sbDir -Recurse -Filter "LICENSE" | Select-Object -First 1
@@ -455,3 +475,7 @@ if ($ShouldSign) {
     Write-Host "Setup без подписи: SmartScreen может показать «неизвестный издатель», пока нет OV/EV-сертификата."
 }
 Write-Host "Запускай NagaNetwork.exe или setup.exe. Setup один раз просит UAC и ставит elevated-helper; portable без helper — UAC на «Подключить». В бандле sing-box.exe, wintun.dll, hev-socks5-tunnel.exe, msys-2.0.dll, olcrtc.exe и olcrtc.version=7f849e08."
+
+} finally {
+    Remove-Item -Recurse -Force $BuildTemp -ErrorAction SilentlyContinue
+}

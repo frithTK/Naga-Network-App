@@ -36,21 +36,21 @@
 
 ## Платформы
 
-Linux и Windows. iOS и macOS пока нет.
+Linux, Windows, Android. iOS собирается с Linux через [xtool](https://github.com/xtool-org/xtool), без Mac. Для Packet Tunnel нужен платный Apple Developer Program. macOS-десктопа нет.
 
-На Linux UI — AppImage, TUN поднимает локальный `naga-control`. На Windows в установщике и portable zip уже есть UI, control-plane, sing-box и Wintun.
+Linux поставляется одним AppImage: внутри UI, naga-control, sing-box, olcRTC и hev. При первом запуске он подготовит системную службу через диалог авторизации ОС. На Windows в установщике и portable zip есть UI, control-plane, sing-box и Wintun.
 
-В настройках кнопка **«Проверить обновление»** скачивает нужный файл с GitHub Releases и ставит его. Тумблер **«Автообновление приложения»** (включён по умолчанию) проверяет GitHub при запуске не чаще раза в 12 часов и ставит полный релиз. Диалоги ОС (pkexec, установщик, PackageInstaller) остаются. На Linux в одном релизе должны быть и AppImage, и `naga-control-linux-x86_64`.
+В настройках кнопка **«Проверить обновление»** скачивает нужный файл с GitHub Releases и ставит его. Тумблер **«Автообновление приложения»** (включён по умолчанию) проверяет GitHub при запуске не чаще раза в 12 часов. Диалоги ОС (pkexec, установщик, PackageInstaller) остаются. Linux скачивает один AppImage и устанавливает runtime из него. Старые клиенты, требующие отдельный control-ассет, переходят на этот формат однократным ручным скачиванием нового AppImage.
 
 Имена файлов:
 
 | Платформа | Файл |
 |---|---|
-| Linux UI | `NagaNetwork-<ver>-x86_64.AppImage` |
-| Linux runtime | `naga-control-linux-x86_64` |
+| Linux | `NagaNetwork-<ver>-x86_64.AppImage` |
 | Windows portable | `NagaNetwork-<ver>-windows-x64.zip` |
 | Windows setup | `NagaNetwork-<ver>-windows-x64-setup.exe` |
 | Android | `NagaNetwork-<ver>-arm64-v8a.apk` |
+| iOS | `NagaNetwork-<ver>-ios.ipa` |
 
 Подробности: [RELEASES.md](docs/platforms/RELEASES.md).
 
@@ -59,5 +59,6 @@ Linux и Windows. iOS и macOS пока нет.
 - [Linux](docs/platforms/LINUX.md)
 - [Windows](docs/platforms/WINDOWS.md)
 - [Android](docs/platforms/ANDROID.md)
+- [iOS](docs/platforms/IOS.md)
 - [Ассеты релизов](docs/platforms/RELEASES.md)
 - [sing-box](docs/engines/SING_BOX.md), [AmneziaWG](docs/engines/AMNEZIAWG.md), [olcRTC](docs/engines/OLCRTC.md)

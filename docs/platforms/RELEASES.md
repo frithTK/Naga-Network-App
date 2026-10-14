@@ -4,14 +4,14 @@
 
 | Платформа | Файл |
 |---|---|
-| Linux UI | `NagaNetwork-<ver>-x86_64.AppImage` |
-| Linux runtime | `naga-control-linux-x86_64` |
+| Linux | `NagaNetwork-<ver>-x86_64.AppImage` |
 | Windows portable | `NagaNetwork-<ver>-windows-x64.zip` |
 | Windows setup | `NagaNetwork-<ver>-windows-x64-setup.exe` |
 | Android | `NagaNetwork-<ver>-arm64-v8a.apk` |
+| iOS | `NagaNetwork-<ver>-ios.ipa` |
 
-Linux-кнопка не ставит AppImage, пока в том же релизе нет `naga-control-linux-x86_64`. Сборка: `./scripts/linux/build-appimage.sh` (кладёт оба файла в `dist/`).
+Linux-кнопка скачивает один AppImage. Внутри него UI, naga-control, sing-box, olcRTC, hev и установщик службы. Сборка: `./scripts/linux/build-appimage.sh`. Отдельный control-ассет больше не требуется. Старые версии с двухфайловым updater переходят на новый формат ручным скачиванием AppImage один раз.
 
 Каждый публичный APK увеличивает число после `+` в pubspec (`versionCode`). Подпись APK — тем же keystore, что у первой публичной сборки.
 
-После скачивания клиент сверяет SHA-256 с полем `digest` ассета в GitHub API, если оно есть.
+После скачивания клиент обязательно сверяет SHA-256 с полем `digest` ассета в GitHub API; при отсутствии digest установка отклоняется.

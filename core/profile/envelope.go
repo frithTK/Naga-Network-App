@@ -42,7 +42,7 @@ type amneziaEnvelope struct {
 // ParseEnvelope reports whether raw is a Naga Network envelope. recognized is
 // true when app is naga-network or legacy nagavpn, even if the document is invalid.
 func ParseEnvelope(raw []byte) (Envelope, bool, error) {
-	trimmed := bytes.TrimSpace(raw)
+	trimmed := ParsingBytes(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return Envelope{}, false, nil
 	}
@@ -92,7 +92,7 @@ func OlcRTCError(raw []byte) error {
 		return nil
 	}
 	var document envelopeFile
-	if json.Unmarshal(bytes.TrimSpace(raw), &document) != nil {
+	if json.Unmarshal(ParsingBytes(raw), &document) != nil {
 		return nil
 	}
 	_, fieldErr := olcrtc.ParseField(document.OlcRTC)

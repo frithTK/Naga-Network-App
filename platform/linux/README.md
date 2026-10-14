@@ -1,6 +1,14 @@
 # Linux platform
 
-sing-box, TUN, systemd, системный прокси и Wayland status notifier.
+Единый AppImage содержит UI, control, sing-box, olcRTC и hev. Он подготавливает
+systemd-службу через pkexec при первом запуске. TUN, системный прокси и tray
+используют тот же runtime; интерфейс запускается от обычного пользователя.
+
+Сборка: `./scripts/linux/build-appimage.sh`. Диагностика: AppImage `--version`,
+`--install-runtime`, `--control --help`. Runtime хранится в
+`~/.local/lib/naga-network/<build-id>`; `~/.local/bin/naga-control` указывает на него.
+
+Разработка из исходников:
 
 ```bash
 ./scripts/linux/install-runtime.sh

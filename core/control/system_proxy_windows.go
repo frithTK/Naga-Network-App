@@ -96,7 +96,16 @@ func (m *WinINETSystemProxy) Configure(host string, port int) (func() error, err
 		_ = rollback()
 		return nil, fmt.Errorf("notify desktop proxy: %w", err)
 	}
-	return rollback, nil
+	return func() error {
+		current, err := store.snapshot()
+		if err != nil {
+			return err
+		}
+		if current != next {
+			return nil
+		}
+		return rollback()
+	}, nil
 }
 
 func mergeProxyOverride(existing string, extra ...string) string {
@@ -259,20 +268,4 @@ func internetSetOption(option uint32, value unsafe.Pointer, length uint32) error
 		return errors.New("InternetSetOption failed")
 	}
 	return nil
-}
-
-func clearStuckOlcProxy() {
-	store := registryProxyStore{}
-	current, err := store.snapshot()
-	if err != nil {
-		return
-	}
-	if !strings.Contains(strings.ToLower(current.server), ":10808") {
-		return
-	}
-	disabled := current
-	disabled.enable = 0
-	disabled.server = ""
-	_ = store.apply(disabled)
-	_ = wininetNotify{}.apply(disabled)
 }

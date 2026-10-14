@@ -293,7 +293,7 @@ func (c *RuntimeController) ProbeNodes(parent context.Context) error {
 }
 
 func idleSingBoxProbeSupported() bool {
-	return goruntime.GOOS != "android"
+	return goruntime.GOOS != "android" && goruntime.GOOS != "ios"
 }
 
 func (c *RuntimeController) probeIdle(parent context.Context) error {

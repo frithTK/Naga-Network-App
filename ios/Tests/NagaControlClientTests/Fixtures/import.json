@@ -1,0 +1,14 @@
+{
+  "preview": {
+    "can_connect": true,
+    "download_bytes": 0,
+    "engine": "sing-box",
+    "olcrtc_available": false,
+    "profile_title": "Fixture profile",
+    "total_bytes": 0,
+    "unlimited": true,
+    "update_interval_seconds": 86400,
+    "upload_bytes": 0
+  },
+  "profile_id": "profile-5e023c11affc32458de1ef40"
+}

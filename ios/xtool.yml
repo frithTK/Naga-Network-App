@@ -1,0 +1,12 @@
+# Оболочка без VPN: ставится с обычным Apple ID (сертификат на 7 дней).
+# Туннель — ios/xtool.vpn.yml после оплаты ADP.
+version: 1
+bundleID: eu.nagavpn.naganetwork
+product: NagaNetwork
+infoPath: Info.plist
+iconPath: Resources/AppIcon.png
+resources:
+  - PrivacyInfo.xcprivacy
+  - Resources/Fonts
+  - Resources/Mascot
+  - Resources/Brand

@@ -20,15 +20,19 @@ const (
 )
 
 var (
-	mu     sync.Mutex
-	tunFD  *os.File
-	hevCmd *exec.Cmd
+	opMu      sync.Mutex
+	mu        sync.Mutex
+	tunFD     *os.File
+	hevBridge *Bridge
 )
 
 func SetTunFD(fd int) error {
 	if fd < 0 {
 		return fmt.Errorf("invalid tun fd")
 	}
+	opMu.Lock()
+	defer opMu.Unlock()
+	stopHev()
 	mu.Lock()
 	defer mu.Unlock()
 	if tunFD != nil {
@@ -49,9 +53,11 @@ func TunFile() *os.File {
 }
 
 func CloseTun() {
+	opMu.Lock()
+	defer opMu.Unlock()
+	stopHev()
 	mu.Lock()
 	defer mu.Unlock()
-	stopHevLocked()
 	if tunFD != nil {
 		_ = tunFD.Close()
 		tunFD = nil
@@ -83,36 +89,86 @@ misc:
 `, mtu, ipv4, socksPort, socksHost)
 }
 
+// Bridge owns the single Wait call for one subprocess and its inherited TUN.
+// Completion from a replaced session can never close a new session's FD.
+type Bridge struct {
+	cmd      *exec.Cmd
+	tun      *os.File
+	done     chan struct{}
+	expected bool
+	failure  error
+}
+
+func (b *Bridge) Done() <-chan struct{} { return b.done }
+func (b *Bridge) Failure() error {
+	mu.Lock()
+	defer mu.Unlock()
+	return b.failure
+}
+func CurrentBridge() *Bridge {
+	mu.Lock()
+	defer mu.Unlock()
+	return hevBridge
+}
+
 func StartHev(path, configPath string) error {
+	opMu.Lock()
+	defer opMu.Unlock()
+	stopHev()
 	mu.Lock()
 	defer mu.Unlock()
 	if tunFD == nil {
 		return fmt.Errorf("VPN interface is not ready")
 	}
-	stopHevLocked()
 	cmd := exec.Command(path, configPath)
 	cmd.ExtraFiles = []*os.File{tunFD}
 	cmd.SysProcAttr = hevProcAttr()
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	hevCmd = cmd
-	go func() { _, _ = cmd.Process.Wait() }()
+	bridge := &Bridge{cmd: cmd, tun: tunFD, done: make(chan struct{})}
+	hevBridge = bridge
+	go func() {
+		err := cmd.Wait()
+		mu.Lock()
+		defer mu.Unlock()
+		if !bridge.expected {
+			if err == nil {
+				err = fmt.Errorf("bridge exited unexpectedly")
+			}
+			bridge.failure = fmt.Errorf("VPN packet bridge failed: %w", err)
+			if hevBridge == bridge && tunFD == bridge.tun {
+				_ = tunFD.Close()
+				tunFD = nil
+			}
+		}
+		close(bridge.done)
+	}()
 	return nil
 }
 
 func StopHev() {
-	mu.Lock()
-	defer mu.Unlock()
-	stopHevLocked()
+	opMu.Lock()
+	defer opMu.Unlock()
+	stopHev()
 }
 
-func stopHevLocked() {
-	if hevCmd == nil || hevCmd.Process == nil {
-		hevCmd = nil
+// Called with opMu held. Waiting never holds mu: the Wait owner needs it to
+// publish the exit and release the old TUN before a replacement is installed.
+func stopHev() {
+	mu.Lock()
+	bridge := hevBridge
+	if bridge == nil {
+		mu.Unlock()
 		return
 	}
-	_ = hevCmd.Process.Kill()
-	_, _ = hevCmd.Process.Wait()
-	hevCmd = nil
+	bridge.expected = true
+	mu.Unlock()
+	_ = bridge.cmd.Process.Kill()
+	<-bridge.done
+	mu.Lock()
+	if hevBridge == bridge {
+		hevBridge = nil
+	}
+	mu.Unlock()
 }

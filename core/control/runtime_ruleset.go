@@ -3,7 +3,7 @@ package control
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -21,13 +21,14 @@ func (c *RuntimeController) materializeProviderRuleSets(stage *string, config []
 		return config, false
 	}
 	*stage = "ruleset_fetch"
+	parent := c.startupContextLocked()
 	c.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 9*time.Second)
 	out, stats, matErr := c.RuleSets.Materialize(ctx, config)
 	cancel()
 	c.mu.Lock()
 	c.journalRuleSetStats(stats, routing, matErr)
-	if c.startAborted {
+	if c.startAborted || parent.Err() != nil {
 		return config, true
 	}
 	if len(out) == 0 {
@@ -56,23 +57,24 @@ func (c *RuntimeController) materializeIdleRuleSets(ctx context.Context, config 
 	return out
 }
 
-func (c *RuntimeController) startEngineWithRuleSetRetry(ctx context.Context, config []byte) (engine.Runtime, error) {
+func (c *RuntimeController) startEngineWithRuleSetRetry(ctx context.Context, config, original []byte) (engine.Runtime, []byte, error) {
 	runtime, err := c.Adapter.Start(ctx, config)
 	if err == nil {
-		return runtime, nil
+		return runtime, config, nil
 	}
-	if !ruleSetStartFailed(err) {
-		return nil, err
+	if !ruleSetStartFailed(err) || ctx.Err() != nil || bytes.Equal(config, original) {
+		return nil, config, err
 	}
-	stripped := dropLocalRuleSets(config)
-	if bytes.Equal(stripped, config) {
-		return nil, err
-	}
-	retried, retryErr := c.Adapter.Start(ctx, stripped)
+	// Restore the exact definitions used before cache materialization. Invented
+	// placeholder URLs preserve syntax but can never restore provider rules.
+	retried, retryErr := c.Adapter.Start(ctx, original)
 	if retryErr != nil {
-		return nil, err
+		return nil, config, errors.Join(err, retryErr)
 	}
-	return retried, nil
+	if c.Journal != nil {
+		c.Journal.Warn("runtime", "ruleset_cache_retry", "Движок запущен с исходными правилами провайдера после ошибки локального кеша", nil)
+	}
+	return retried, original, nil
 }
 
 func (c *RuntimeController) journalRuleSetStats(stats ruleset.Stats, routing policy.RoutingPolicy, err error) {
@@ -102,42 +104,4 @@ func ruleSetStartFailed(err error) bool {
 	return strings.Contains(msg, "rule-set") ||
 		strings.Contains(msg, "rule_set") ||
 		strings.Contains(msg, "ruleset")
-}
-
-func dropLocalRuleSets(config []byte) []byte {
-	var document map[string]any
-	if err := json.Unmarshal(config, &document); err != nil {
-		return config
-	}
-	route, _ := document["route"].(map[string]any)
-	if route == nil {
-		return config
-	}
-	rawSets, _ := route["rule_set"].([]any)
-	changed := false
-	for i, raw := range rawSets {
-		item, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		if kind, _ := item["type"].(string); kind != "local" {
-			continue
-		}
-		tag, _ := item["tag"].(string)
-		rawSets[i] = map[string]any{
-			"tag":  tag,
-			"type": "remote",
-			"url":  "https://example.invalid/naga-ruleset-retry",
-		}
-		changed = true
-	}
-	if !changed {
-		return config
-	}
-	route["rule_set"] = rawSets
-	out, err := json.Marshal(document)
-	if err != nil {
-		return config
-	}
-	return out
 }

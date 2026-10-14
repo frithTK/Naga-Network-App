@@ -59,12 +59,12 @@ func (c *RuntimeController) startOlcRTCLocked(stage *string, value profile.Profi
 		return c.snapshotLocked(), err
 	}
 	*stage = "olcrtc_start"
-	proc, err := engineolc.Start(context.Background(), binary, yamlPath)
+	proc, err := engineolc.Start(c.startupContextLocked(), binary, yamlPath)
 	if err != nil {
 		c.lastError = safeRuntimeError(err)
 		return c.snapshotLocked(), err
 	}
-	readyCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	readyCtx, cancel := context.WithTimeout(c.startupContextLocked(), 8*time.Second)
 	err = proc.Ready(readyCtx)
 	cancel()
 	if err != nil {
@@ -72,7 +72,6 @@ func (c *RuntimeController) startOlcRTCLocked(stage *string, value profile.Profi
 		c.lastError = "olcrtc socks port was not ready"
 		return c.snapshotLocked(), err
 	}
-	clearStuckOlcProxy()
 	*stage = "tun"
 	link, err := c.bringUpOlcTunnelLocked(value.ID, cfg)
 	if err != nil {
@@ -85,6 +84,7 @@ func (c *RuntimeController) startOlcRTCLocked(stage *string, value profile.Profi
 			c.Journal.Info("olcrtc", "process_log", olcprofile.RedactLine(line, cfg.Profiles), nil)
 		})
 	}
+	c.olcFailed = false
 	c.olcProc = proc
 	c.olcLink = link
 	c.olcLinkOn = c.olcHost == nil
@@ -201,7 +201,7 @@ func (c *RuntimeController) stopOlcRTCLocked() error {
 	}
 	if c.olcHev != nil && c.olcHev.Process != nil {
 		_ = c.olcHev.Process.Kill()
-		_, _ = c.olcHev.Process.Wait()
+		<-c.olcHevDone
 		c.olcHev = nil
 	}
 	androidvpn.StopHev()

@@ -4,13 +4,13 @@ TUN через sing-box, systemd unit и AppImage.
 
 ## Установка
 
-1. `./scripts/linux/install-runtime.sh` — соберёт `naga-control`, поставит udev/polkit и unit `naga-network-control@$(id -un)`.
-2. `sudo systemctl start naga-network-control@$(id -un)`, если install не включил сервис.
-3. UI: AppImage из [релиза](https://github.com/frithTK/Naga-Network-App/releases) или `./scripts/linux/build-appimage.sh` (кладёт ещё `dist/naga-control-linux-x86_64`). Для разработки — `./run.sh`.
+1. Скачать один AppImage из [релиза](https://github.com/frithTK/Naga-Network-App/releases), разрешить исполнение и запустить.
+2. При первом запуске подтвердить диалог ОС: встроенный установщик подготовит udev/polkit и unit `naga-network-control@$(id -un)`. При отмене прежний control сохраняется.
+3. Сборка из исходников: `./scripts/linux/build-appimage.sh`; результат — `dist/NagaNetwork-<version>-x86_64.AppImage`. Для разработки — `./scripts/linux/install-runtime.sh` и `./run.sh`.
 
-AppImage содержит Flutter UI. TUN и `CAP_NET_ADMIN` остаются у systemd unit.
+AppImage содержит Flutter UI, naga-control, sing-box, olcRTC и hev. Встроенный runtime копируется в `~/.local/lib/naga-network/<build-id>`, control доступен через `~/.local/bin/naga-control`. Предыдущий runtime сохраняется. TUN и `CAP_NET_ADMIN` остаются у systemd unit; UI запускается от обычного пользователя. Движки находятся рядом с control, системный sing-box не заменяется.
 
-Обновление из приложения (только AppImage, не `flutter run`): при включённом «Автообновление приложения» клиент проверяет GitHub при запуске (не чаще раза в 12 часов) и ставит релиз сам. Кнопка «Проверить обновление» остаётся. Ставятся **оба** ассета — новый AppImage рядом с текущим (`$APPIMAGE`) и `naga-control` в `~/.local/bin`, затем `pkexec systemctl restart naga-network-control@$(id -un)`. Имена файлов: [RELEASES.md](RELEASES.md).
+Обновление из приложения (только AppImage, не `flutter run`): скачивается **один** AppImage, проверяется SHA256, затем новый файл запускается с `--prepare-runtime`. После подготовки встроенного runtime и проверки его версии новое окно ждёт завершения прежнего процесса. Автообновление проверяет GitHub при запуске не чаще раза в 12 часов; ручная кнопка сохраняется. Старым клиентам с двухфайловым updater требуется один раз скачать новый AppImage вручную. Имена: [RELEASES.md](RELEASES.md).
 
 Токен control-plane: `~/.local/share/naga-network/control.token` (права `0600`).
 
@@ -20,7 +20,7 @@ AppImage содержит Flutter UI. TUN и `CAP_NET_ADMIN` остаются у
 ./scripts/linux/check-runtime.sh
 ```
 
-Нужны `sing-box` в PATH, `/dev/net/tun` (`0660 root:naga-network`) и пакеты GTK / AppIndicator для tray.
+AppImage включает движки; нужны systemd/polkit, curl, стандартные Linux utilities и GTK / AppIndicator для tray. Установщик настраивает `/dev/net/tun` (`0660 root:naga-network`). CLI `AppImage --install-runtime` повторяет подготовку службы; `--version` показывает версию; `--control` передаёт аргументы встроенному control для диагностики.
 
 ## Режимы
 

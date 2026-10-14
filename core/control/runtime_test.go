@@ -293,10 +293,13 @@ func TestSafeRuntimeErrorHidesEnginePanic(t *testing.T) {
 
 func TestIdleSingBoxProbeSupportedOnThisOS(t *testing.T) {
 	got := idleSingBoxProbeSupported()
-	if runtime.GOOS == "android" && got {
-		t.Fatal("Android must not spawn idle sing-box")
+	if runtime.GOOS == "android" || runtime.GOOS == "ios" {
+		if got {
+			t.Fatalf("%s must not spawn idle sing-box", runtime.GOOS)
+		}
+		return
 	}
-	if runtime.GOOS != "android" && !got {
+	if !got {
 		t.Fatal("desktop idle probe must stay available")
 	}
 }

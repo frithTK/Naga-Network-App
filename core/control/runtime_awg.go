@@ -188,11 +188,11 @@ func (c *RuntimeController) startAWGSidecar(stage *string, value profile.Profile
 	}
 	*stage = "sidecar_start"
 	sidecar := c.newAWGSidecar()
-	if err := sidecar.Start(context.Background(), cfg); err != nil {
+	if err := sidecar.Start(c.startupContextLocked(), cfg); err != nil {
 		_ = sidecar.Stop()
 		return awgLeaf{}, nil, err
 	}
-	readyCtx, cancelReady := context.WithTimeout(context.Background(), handshakeReadyTimeout)
+	readyCtx, cancelReady := context.WithTimeout(c.startupContextLocked(), handshakeReadyTimeout)
 	err = sidecar.Ready(readyCtx)
 	cancelReady()
 	if err != nil {
@@ -287,20 +287,21 @@ func (c *RuntimeController) finishStartLocked(
 		c.lastError = safeRuntimeError(err)
 		return c.snapshotLocked(), err
 	}
+	ruleSetSource := append([]byte(nil), config...)
 	config, cancelled := c.materializeProviderRuleSets(stage, config, routing)
 	if cancelled {
 		c.lastError = "start cancelled"
 		return c.snapshotLocked(), errors.New("start cancelled")
 	}
-	pendingInspect, inspectErr := inspectRuntimeConfig(config)
 	*stage = "engine_start"
-	lifecycleContext, cancel := context.WithCancel(context.Background())
-	runtime, err := c.startEngineWithRuleSetRetry(lifecycleContext, config)
+	lifecycleContext, cancel := context.WithCancel(c.startupContextLocked())
+	runtime, effectiveConfig, err := c.startEngineWithRuleSetRetry(lifecycleContext, config, ruleSetSource)
 	if err != nil {
 		cancel()
 		c.lastError = safeRuntimeError(err)
 		return c.snapshotLocked(), err
 	}
+	pendingInspect, inspectErr := inspectRuntimeConfig(effectiveConfig)
 	if goruntime.GOOS == "android" && connectionPolicy.TrafficMode == policy.TrafficTUN {
 		*stage = "android_hev"
 		if _, err := c.startAndroidHevLocked(profileID, androidvpn.SingBoxIPv4, androidvpn.SingBoxPort); err != nil {
@@ -310,6 +311,12 @@ func (c *RuntimeController) finishStartLocked(
 			c.lastError = safeRuntimeError(err)
 			return c.snapshotLocked(), err
 		}
+	}
+	if err := lifecycleContext.Err(); err != nil {
+		return c.abortStartLocked(runtime, cancel, err)
+	}
+	if goruntime.GOOS == "android" && connectionPolicy.TrafficMode == policy.TrafficTUN {
+		runtime = &bridgeRuntime{Runtime: runtime, bridge: c.androidBridge}
 	}
 	c.runtime = runtime
 	c.runtimeCancel = cancel
@@ -344,6 +351,9 @@ func (c *RuntimeController) finishStartLocked(
 	if c.activeRuntimeTag == "" && len(runtimeCandidates) == 1 {
 		c.activeRuntimeTag = runtimeCandidates[0].RuntimeTag
 	}
+	if err := lifecycleContext.Err(); err != nil {
+		return c.abortStartLocked(runtime, cancel, err)
+	}
 	var restoreDNS func() error
 	var restoreProxy func() error
 	if connectionPolicy.TrafficMode == policy.TrafficSystemProxy {
@@ -370,6 +380,9 @@ func (c *RuntimeController) finishStartLocked(
 		c.inspect = &inspectCopy
 	}
 	c.startRecoveryMonitorLocked(profileID, runtime)
+	if routing.ProviderRules && c.RuleSets != nil {
+		go c.RuleSets.Watch(c.recoveryContext, ruleSetSource)
+	}
 	*stage = "complete"
 	return c.snapshotLocked(), nil
 }

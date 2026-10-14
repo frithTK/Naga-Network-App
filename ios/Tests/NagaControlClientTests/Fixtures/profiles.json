@@ -1,0 +1,16 @@
+[
+  {
+    "can_connect": true,
+    "download_bytes": 0,
+    "engine": "sing-box",
+    "has_source_url": false,
+    "id": "profile-5e023c11affc32458de1ef40",
+    "imported_at": "2026-10-11T09:00:00Z",
+    "name": "Fixture profile",
+    "total_bytes": 0,
+    "unlimited": true,
+    "update_interval_seconds": 86400,
+    "updated_at": "2026-10-11T09:51:40Z",
+    "upload_bytes": 0
+  }
+]

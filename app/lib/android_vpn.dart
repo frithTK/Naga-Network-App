@@ -10,6 +10,10 @@ const vpnChannelName = 'eu.nagavpn.naga_network/vpn';
 
 bool get nagaRunsOnAndroid => !kIsWeb && Platform.isAndroid;
 
+bool get nagaRunsOnIOS => !kIsWeb && Platform.isIOS;
+
+bool get nagaNeedsSystemTunnel => nagaRunsOnAndroid || nagaRunsOnIOS;
+
 class AndroidVpn {
   AndroidVpn({
     MethodChannel? vpnChannel,

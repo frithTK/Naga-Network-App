@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Keep nested engine modules on the same patched compiler as naga-control.
+export GOTOOLCHAIN=go1.27.2
+
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 app_dir="${project_dir}/app"
 dist_dir="${project_dir}/dist"
@@ -100,9 +103,11 @@ if [[ -f "${patch_file}" ]]; then
     git -C "${singbox_dir}" apply "${patch_file}"
   fi
 fi
+python3 "${project_dir}/scripts/runtime/apply-singbox-security-deps.py" "${singbox_dir}"
+
 (
   cd "${singbox_dir}"
-  go build -trimpath -tags "with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_clash_api" \
+  go build -trimpath -tags "with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_clash_api,http2legacy" \
     -ldflags "-s -w -checklinkname=0 -linkmode=external -extldflags ${page_size_ld}" \
     -o "${jni_dir}/libsingbox.so" ./cmd/sing-box
 )
@@ -203,6 +208,8 @@ if [[ ! -f "${apk}" ]]; then
   echo "Не найден APK: ${apk}" >&2
   exit 1
 fi
+python3 "${project_dir}/scripts/android/verify-native-pages.py" "${apk}"
+
 
 output="${dist_dir}/NagaNetwork-${version}-arm64-v8a.apk"
 cp -f "${apk}" "${output}"

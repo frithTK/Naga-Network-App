@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -159,9 +160,53 @@ func InspectMode(config []byte) (ModeOptions, error) {
 		return ModeOptions{}, err
 	}
 
+	selectorTag, outbounds, err := modeGraph(document)
+	if err != nil {
+		return ModeOptions{}, err
+	}
+	selector := outbounds[selectorTag]
+	defaultTag, _ := selector["default"].(string)
+	options, _ := selector["outbounds"].([]any)
+	if len(options) > maxModeNodes {
+		return ModeOptions{}, ErrProfileTooComplex
+	}
+	remaining := maxModeNodes
+	remainingBytes := 1 << 20
+	nodes := make([]Node, 0, len(options))
+	for _, raw := range options {
+		tag, ok := raw.(string)
+		if !ok || tag == "" {
+			continue
+		}
+		outboundType := "unknown"
+		if outbound, exists := outbounds[tag]; exists {
+			outboundType, _ = outbound["type"].(string)
+			if outboundType == "" {
+				outboundType = "unknown"
+			}
+		}
+		node := NodeMetadata(tag, outboundType)
+		if remaining <= 0 {
+			return ModeOptions{}, ErrProfileTooComplex
+		}
+		remaining--
+		remainingBytes -= nodeMetadataBytes(node)
+		if remainingBytes < 0 {
+			return ModeOptions{}, ErrProfileTooComplex
+		}
+		node.Children, err = nodeChildren(tag, outbounds, make(map[string]bool), &remaining, &remainingBytes, 1)
+		if err != nil {
+			return ModeOptions{}, err
+		}
+		nodes = append(nodes, node)
+	}
+	return ModeOptions{Tag: selectorTag, Default: defaultTag, Nodes: nodes}, nil
+}
+
+func modeGraph(document map[string]any) (string, map[string]map[string]any, error) {
 	rawOutbounds, ok := document["outbounds"].([]any)
 	if !ok {
-		return ModeOptions{}, errors.New("sing-box config must contain an outbounds array")
+		return "", nil, errors.New("sing-box config must contain an outbounds array")
 	}
 	outbounds := make(map[string]map[string]any, len(rawOutbounds))
 	selectorTags := make([]string, 0)
@@ -173,6 +218,17 @@ func InspectMode(config []byte) (ModeOptions, error) {
 		tag, _ := outbound["tag"].(string)
 		if tag == "" {
 			continue
+		}
+		kind, _ := outbound["type"].(string)
+		if len(tag) > maxModeTagBytes || len(kind) > maxModeTypeBytes {
+			return "", nil, ErrProfileTooComplex
+		}
+		if children, ok := outbound["outbounds"].([]any); ok {
+			for _, raw := range children {
+				if ref, ok := raw.(string); ok && len(ref) > maxModeTagBytes {
+					return "", nil, ErrProfileTooComplex
+				}
+			}
 		}
 		outbounds[tag] = outbound
 		if outboundType, _ := outbound["type"].(string); outboundType == "selector" {
@@ -201,43 +257,37 @@ func InspectMode(config []byte) (ModeOptions, error) {
 		selectorTag = selectorTags[0]
 	}
 	if selectorTag == "" {
-		return ModeOptions{}, errors.New("profile has no selectable mode")
+		return "", nil, errors.New("profile has no selectable mode")
 	}
 
-	selector := outbounds[selectorTag]
-	defaultTag, _ := selector["default"].(string)
-	options, _ := selector["outbounds"].([]any)
-	nodes := make([]Node, 0, len(options))
-	for _, raw := range options {
-		tag, ok := raw.(string)
-		if !ok || tag == "" {
-			continue
-		}
-		outboundType := "unknown"
-		if outbound, exists := outbounds[tag]; exists {
-			outboundType, _ = outbound["type"].(string)
-			if outboundType == "" {
-				outboundType = "unknown"
-			}
-		}
-		node := NodeMetadata(tag, outboundType)
-		node.Children = nodeChildren(tag, outbounds, make(map[string]bool))
-		nodes = append(nodes, node)
-	}
-	return ModeOptions{Tag: selectorTag, Default: defaultTag, Nodes: nodes}, nil
+	return selectorTag, outbounds, nil
 }
 
-func nodeChildren(tag string, outbounds map[string]map[string]any, visiting map[string]bool) []Node {
+const maxModeNodes = 10000
+const maxModeDepth = 64
+const maxModeTagBytes = 2048
+const maxModeTypeBytes = 64
+
+var ErrProfileTooComplex = errors.New("profile selector graph is too complex")
+
+func nodeMetadataBytes(node Node) int {
+	return 128 + len(node.Tag) + len(node.Type) + len(node.Country) + len(node.Protocol)
+}
+
+func nodeChildren(tag string, outbounds map[string]map[string]any, visiting map[string]bool, remaining *int, remainingBytes *int, depth int) ([]Node, error) {
 	if visiting[tag] {
-		return nil
+		return nil, nil
 	}
 	outbound, ok := outbounds[tag]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	rawChildren, ok := outbound["outbounds"].([]any)
 	if !ok || len(rawChildren) == 0 {
-		return nil
+		return nil, nil
+	}
+	if depth >= maxModeDepth || len(rawChildren) > *remaining {
+		return nil, ErrProfileTooComplex
 	}
 	visiting[tag] = true
 	defer delete(visiting, tag)
@@ -256,10 +306,22 @@ func nodeChildren(tag string, outbounds map[string]map[string]any, visiting map[
 			childType = "unknown"
 		}
 		node := NodeMetadata(childTag, childType)
-		node.Children = nodeChildren(childTag, outbounds, visiting)
+		if *remaining <= 0 {
+			return nil, ErrProfileTooComplex
+		}
+		*remaining--
+		*remainingBytes -= nodeMetadataBytes(node)
+		if *remainingBytes < 0 {
+			return nil, ErrProfileTooComplex
+		}
+		var err error
+		node.Children, err = nodeChildren(childTag, outbounds, visiting, remaining, remainingBytes, depth+1)
+		if err != nil {
+			return nil, err
+		}
 		children = append(children, node)
 	}
-	return children
+	return children, nil
 }
 
 // ContainsNode reports whether a tag is reachable from the profile's main
@@ -280,45 +342,74 @@ func ContainsNode(config []byte, target string) (bool, error) {
 // SelectionPath returns the selector choices required to reach target from
 // the profile's main selector.
 func SelectionPath(config []byte, target string) ([]SelectorChoice, error) {
-	options, err := InspectMode(config)
+	paths, err := SelectionPaths(config)
 	if err != nil {
 		return nil, err
 	}
+	path, ok := paths[target]
+	if !ok {
+		return nil, errors.New("selected mode is not available in profile")
+	}
+	return path, nil
+}
+
+// SelectionPaths indexes the graph once for all destinations. The first pass
+// prefers paths through selectors; the second adds destinations reachable only
+// through urltest groups. Shared subgraphs are visited once per pass.
+func SelectionPaths(config []byte) (map[string][]SelectorChoice, error) {
 	document, err := decodeConfig(config)
 	if err != nil {
 		return nil, err
 	}
-	rawOutbounds, ok := document["outbounds"].([]any)
-	if !ok {
-		return nil, errors.New("sing-box config must contain an outbounds array")
+	root, outbounds, err := modeGraph(document)
+	if err != nil {
+		return nil, err
 	}
-	outbounds := make(map[string]map[string]any, len(rawOutbounds))
-	for _, raw := range rawOutbounds {
-		outbound, ok := raw.(map[string]any)
-		if !ok {
-			continue
+	if len(outbounds) > maxModeNodes {
+		return nil, ErrProfileTooComplex
+	}
+	paths := make(map[string][]SelectorChoice, len(outbounds))
+	for _, allowURLTest := range []bool{false, true} {
+		visited := make(map[string]bool, len(outbounds))
+		var walk func(string, []SelectorChoice, int) error
+		walk = func(tag string, path []SelectorChoice, depth int) error {
+			if visited[tag] {
+				return nil
+			}
+			if depth > maxModeDepth {
+				return ErrProfileTooComplex
+			}
+			visited[tag] = true
+			if _, exists := paths[tag]; !exists {
+				paths[tag] = append([]SelectorChoice(nil), path...)
+			}
+			parent := outbounds[tag]
+			parentType, _ := parent["type"].(string)
+			children, _ := parent["outbounds"].([]any)
+			for _, raw := range children {
+				child, ok := raw.(string)
+				if !ok || child == "" {
+					continue
+				}
+				childType, _ := outbounds[child]["type"].(string)
+				if !allowURLTest && childType == "urltest" {
+					continue
+				}
+				next := path
+				if parentType == "selector" || parentType == "urltest" {
+					next = append(append([]SelectorChoice(nil), path...), SelectorChoice{Selector: tag, Outbound: child})
+				}
+				if err := walk(child, next, depth+1); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
-		tag, _ := outbound["tag"].(string)
-		if tag != "" {
-			outbounds[tag] = outbound
+		if err := walk(root, nil, 0); err != nil {
+			return nil, err
 		}
 	}
-	path := findNodePath(options.Tag, target, outbounds, make(map[string]bool))
-	if len(path) == 0 {
-		return nil, errors.New("selected mode is not available in profile")
-	}
-	choices := make([]SelectorChoice, 0, len(path))
-	for index := 0; index+1 < len(path); index++ {
-		parent := outbounds[path[index]]
-		parentType, _ := parent["type"].(string)
-		if parentType == "selector" || parentType == "urltest" {
-			choices = append(choices, SelectorChoice{
-				Selector: path[index],
-				Outbound: path[index+1],
-			})
-		}
-	}
-	return choices, nil
+	return paths, nil
 }
 
 func nodeContains(node Node, target string) bool {
@@ -355,6 +446,9 @@ func InspectOutboundMetadata(config []byte) (map[string]Node, error) {
 		typeName, _ := outbound["type"].(string)
 		if tag == "" || typeName == "" {
 			continue
+		}
+		if len(tag) > maxModeTagBytes || len(typeName) > maxModeTypeBytes {
+			return nil, ErrProfileTooComplex
 		}
 		result[tag] = NodeMetadata(tag, typeName)
 	}
@@ -532,7 +626,6 @@ func ApplyTrafficMode(config []byte, mode policy.TrafficMode) ([]byte, error) {
 	}
 	rawInbounds, _ := document["inbounds"].([]any)
 	inbounds := make([]any, 0, len(rawInbounds)+1)
-	haveProxy := false
 	for _, raw := range rawInbounds {
 		inbound, ok := raw.(map[string]any)
 		if !ok {
@@ -542,19 +635,16 @@ func ApplyTrafficMode(config []byte, mode policy.TrafficMode) ([]byte, error) {
 			continue
 		}
 		if tag, _ := inbound["tag"].(string); tag == "naga-system-proxy" {
-			haveProxy = true
 			continue
 		}
 		inbounds = append(inbounds, inbound)
 	}
-	if !haveProxy {
-		inbounds = append(inbounds, map[string]any{
-			"type":        "mixed",
-			"tag":         "naga-system-proxy",
-			"listen":      "127.0.0.1",
-			"listen_port": float64(SystemProxyPort),
-		})
-	}
+	inbounds = append(inbounds, map[string]any{
+		"type":        "mixed",
+		"tag":         "naga-system-proxy",
+		"listen":      "127.0.0.1",
+		"listen_port": float64(SystemProxyPort),
+	})
 	document["inbounds"] = inbounds
 	if route, ok := document["route"].(map[string]any); ok {
 		if rules, ok := route["rules"].([]any); ok {
@@ -1047,6 +1137,7 @@ func findNodePathAllowing(current, target string, outbounds map[string]map[strin
 }
 
 func decodeConfig(config []byte) (map[string]any, error) {
+	config = ParsingBytes(config)
 	var document map[string]any
 	if err := json.Unmarshal(config, &document); err != nil {
 		return nil, fmt.Errorf("parse sing-box JSON: %w", err)
@@ -1140,6 +1231,7 @@ func DecodeProfileTitle(value string) (string, error) {
 }
 
 func ValidateSingBoxConfig(config []byte) error {
+	config = ParsingBytes(config)
 	if len(strings.TrimSpace(string(config))) == 0 {
 		return errors.New("sing-box config is empty")
 	}
@@ -1161,6 +1253,9 @@ func ValidateSingBoxConfig(config []byte) error {
 		return errors.New("sing-box config must contain a non-empty outbounds array")
 	}
 
+	if len(outbounds) > maxModeNodes {
+		return ErrProfileTooComplex
+	}
 	tags := make(map[string]json.RawMessage, len(outbounds))
 	for index, rawOutbound := range outbounds {
 		var outbound map[string]json.RawMessage
@@ -1171,10 +1266,16 @@ func ValidateSingBoxConfig(config []byte) error {
 		if rawType, ok := outbound["type"]; !ok || json.Unmarshal(rawType, &outboundType) != nil || strings.TrimSpace(outboundType) == "" {
 			return fmt.Errorf("sing-box outbound %d has no valid type", index)
 		}
+		if len(outboundType) > maxModeTypeBytes {
+			return ErrProfileTooComplex
+		}
 		var tag string
 		if rawTag, ok := outbound["tag"]; ok {
 			if json.Unmarshal(rawTag, &tag) != nil {
 				return fmt.Errorf("sing-box outbound %d has an invalid tag", index)
+			}
+			if len(tag) > maxModeTagBytes {
+				return ErrProfileTooComplex
 			}
 			if tag != "" {
 				if previous, exists := tags[tag]; exists {
@@ -1203,6 +1304,9 @@ func ValidateSingBoxConfig(config []byte) error {
 			}
 		}
 	}
+	if _, err := InspectMode(config); errors.Is(err, ErrProfileTooComplex) {
+		return err
+	}
 	return nil
 }
 
@@ -1215,4 +1319,10 @@ func sameJSON(left, right json.RawMessage) bool {
 		return false
 	}
 	return reflect.DeepEqual(a, b)
+}
+
+// ParsingBytes strips an optional UTF-8 BOM and edge whitespace from a
+// parsing view. Callers persist the original bytes separately.
+func ParsingBytes(raw []byte) []byte {
+	return bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(raw), []byte{0xEF, 0xBB, 0xBF}))
 }

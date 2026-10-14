@@ -1,0 +1,10 @@
+{
+  "apps": [],
+  "builtin_private": true,
+  "builtin_ru": true,
+  "mode": "all_vpn",
+  "provider_rules": true,
+  "revision": 0,
+  "ru_direct": true,
+  "schema_version": 2
+}

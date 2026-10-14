@@ -1,0 +1,12 @@
+{
+  "mode": "proxy",
+  "nodes": [
+    {
+      "protocol": "VLESS",
+      "selected": true,
+      "tag": "CZ VLESS",
+      "type": "vless"
+    }
+  ],
+  "profile_id": "profile-5e023c11affc32458de1ef40"
+}

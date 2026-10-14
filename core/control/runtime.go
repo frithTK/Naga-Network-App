@@ -36,12 +36,17 @@ type RuntimeController struct {
 	Journal  *diagnostics.Logger
 	RuleSets *ruleset.Resolver
 
+	operationMu     sync.Mutex
+	startCancel     context.CancelFunc
+	stopPending     int
+	startContext    context.Context // protected by mu
 	mu              sync.Mutex
 	cacheMu         sync.Mutex
 	cachedSnapshot  RuntimeSnapshot
 	startInProgress atomic.Bool
 	runtime         engine.Runtime
 	runtimeCancel   context.CancelFunc
+	recoveryContext context.Context
 	recoveryCancel  context.CancelFunc
 	profileID       string
 	runtimeAliases  map[string]string
@@ -69,6 +74,9 @@ type RuntimeController struct {
 	lastObservedClass policy.NetworkClass
 	awgSidecars       []awgengine.Sidecar
 	olcProc           *engineolc.Command
+	androidBridge     *androidvpn.Bridge
+	olcHevDone        chan struct{}
+	olcFailed         bool
 	olcHev            *exec.Cmd
 	olcHost           engineolc.TunnelHost
 	olcLink           engineolc.LinkState
@@ -169,9 +177,38 @@ func (c *RuntimeController) Start(profileID string) (snapshot RuntimeSnapshot, r
 		return c.snapshot(), err
 	}
 
+	c.operationMu.Lock()
+	if c.stopPending > 0 {
+		c.operationMu.Unlock()
+		return c.snapshot(), errors.New("runtime transition already in progress")
+	}
+	if c.startCancel != nil {
+		c.operationMu.Unlock()
+		snapshot := c.snapshot()
+		if snapshot.ProfileID == profileID && snapshot.Status == string(engine.Starting) {
+			return snapshot, nil
+		}
+		return snapshot, errors.New("runtime transition already in progress")
+	}
+	startContext, startCancel := context.WithCancel(context.Background())
+	c.startCancel = startCancel
+	c.operationMu.Unlock()
+	defer func() {
+		c.operationMu.Lock()
+		c.startCancel = nil
+		c.operationMu.Unlock()
+		if resultErr != nil {
+			startCancel()
+		}
+	}()
 	c.startInProgress.Store(true)
 	defer c.startInProgress.Store(false)
 	c.mu.Lock()
+	if err := startContext.Err(); err != nil {
+		c.mu.Unlock()
+		return c.snapshot(), err
+	}
+	c.startContext = startContext
 	owned := false
 	if c.startOwner {
 		if c.runtime == nil && !c.startingOverlay {
@@ -187,6 +224,7 @@ func (c *RuntimeController) Start(profileID string) (snapshot RuntimeSnapshot, r
 	if owned {
 		c.startOwner = false
 	}
+	c.startContext = nil
 	c.mu.Unlock()
 	return snapshot, resultErr
 }
@@ -415,6 +453,7 @@ func (c *RuntimeController) startRecoveryMonitorLocked(profileID string, runtime
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.recoveryCancel = cancel
+	c.recoveryContext = ctx
 	go c.monitorRuntime(ctx, profileID, runtime)
 	go c.monitorActiveHealth(ctx)
 }
@@ -534,7 +573,33 @@ func (c *RuntimeController) effectiveNetworkClassLocked(stored policy.NetworkCla
 	return stored
 }
 
+// prepareStop interrupts acquisition before either the HTTP mutation lock or
+// the controller lock is acquired. The barrier also prevents rollback/reconnect
+// from starting a replacement while a stop request is waiting for cleanup.
+func (c *RuntimeController) prepareStop() func() {
+	c.operationMu.Lock()
+	c.stopPending++
+	if c.startCancel != nil {
+		c.startCancel()
+	}
+	c.operationMu.Unlock()
+	return func() {
+		c.operationMu.Lock()
+		c.stopPending--
+		c.operationMu.Unlock()
+	}
+}
+
+func (c *RuntimeController) startupContextLocked() context.Context {
+	if c.startContext != nil {
+		return c.startContext
+	}
+	return context.Background()
+}
+
 func (c *RuntimeController) Stop() (snapshot RuntimeSnapshot, resultErr error) {
+	finishStop := c.prepareStop()
+	defer finishStop()
 	startedAt := time.Now()
 	if c.Journal != nil {
 		c.Journal.Info("runtime", "stop_requested", "Запрошена остановка VPN", nil)
@@ -553,6 +618,7 @@ func (c *RuntimeController) Stop() (snapshot RuntimeSnapshot, resultErr error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.startAborted = true
+	c.olcFailed = false
 	androidvpn.StopHev()
 	olcEngine := c.activeEngine == profile.EngineOlcRTC
 	if err := c.stopOlcRTCLocked(); err != nil {
@@ -917,8 +983,21 @@ func (c *RuntimeController) snapshotLocked() RuntimeSnapshot {
 	} else if c.Adapter != nil {
 		snapshot.Engine = string(c.Adapter.Type())
 	}
+	if c.olcFailed {
+		snapshot.Status = string(engine.Failed)
+		snapshot.Engine = string(profile.EngineOlcRTC)
+	}
 	if c.olcProc != nil {
 		snapshot.Status = string(engine.Connected)
+		select {
+		case <-c.olcProc.Done():
+			snapshot.Status = string(engine.Failed)
+		default:
+		}
+		if c.androidBridge != nil && c.androidBridge.Failure() != nil {
+			snapshot.Status = string(engine.Failed)
+			snapshot.Error = safeRuntimeError(c.androidBridge.Failure())
+		}
 		snapshot.Engine = string(profile.EngineOlcRTC)
 		snapshot.ActiveNode = c.activeRuntimeTag
 		if snapshot.ActiveNode == "" {

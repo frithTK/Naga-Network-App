@@ -36,6 +36,9 @@ platform/**/dist/
 *.sqlite
 profiles/
 runtime/
+!scripts/runtime/
+!scripts/runtime/*.py
+!scripts/runtime/*.json
 
 # Tooling and local brand dumps
 graphify-out/
@@ -50,3 +53,7 @@ WINDOWS-VM.txt
 
 # Flutter golden test failure output
 **/test/failures/
+
+# Python test and packaging caches
+__pycache__/
+*.pyc

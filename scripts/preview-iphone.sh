@@ -7,8 +7,9 @@ base_port="${NAGA_PREVIEW_PORT:-8080}"
 port="$base_port"
 startup_timeout="${NAGA_PREVIEW_TIMEOUT:-120}"
 browser="${NAGA_PREVIEW_BROWSER:-chromium}"
-build_log="${TMPDIR:-/tmp}/naga-network-flutter-web-build.log"
-server_log="${TMPDIR:-/tmp}/naga-network-flutter-static-server.log"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/naga-preview.XXXXXXXX")"
+build_log="${work_dir}/build.log"
+server_log="${work_dir}/server.log"
 
 if ! command -v "$flutter_bin" >/dev/null 2>&1; then
   echo "Flutter не найден. Задай FLUTTER_BIN или установи Flutter в PATH." >&2

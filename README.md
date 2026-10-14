@@ -36,21 +36,21 @@ Outside stock sing-box:
 
 ## Platforms
 
-Linux and Windows. No iOS or macOS yet.
+Linux, Windows, Android. iOS is built from Linux with [xtool](https://github.com/xtool-org/xtool) (no Mac). Packet Tunnel needs a paid Apple Developer Program. No macOS desktop.
 
-On Linux the UI is an AppImage; TUN is started by local `naga-control`. The Windows installer and portable zip already include the UI, control-plane, sing-box and Wintun.
+Linux ships one AppImage containing the UI, naga-control, sing-box, olcRTC and hev. On first launch it prepares the local systemd service through the OS authorization dialog. The Windows installer and portable zip include the UI, control-plane, sing-box and Wintun.
 
-In Settings, **Check for updates** downloads the matching GitHub Release asset and installs it. **Auto-update the app** (on by default) checks GitHub at startup at most once every 12 hours and installs when a complete release is available. OS dialogs still appear (pkexec, installer, PackageInstaller). Turn the toggle off to keep updates manual. Linux needs both the AppImage and `naga-control-linux-x86_64` in the same release.
+In Settings, **Check for updates** downloads the matching GitHub Release asset and installs it. **Auto-update the app** (on by default) checks GitHub at startup at most once every 12 hours. OS dialogs still appear (pkexec, installer, PackageInstaller). Turn the toggle off to keep updates manual. Linux downloads one AppImage and installs its embedded runtime. Older clients that require a separate control asset need a one-time manual download of the new AppImage.
 
 Release file names:
 
 | Platform | Asset |
 |---|---|
-| Linux UI | `NagaNetwork-<ver>-x86_64.AppImage` |
-| Linux runtime | `naga-control-linux-x86_64` |
+| Linux | `NagaNetwork-<ver>-x86_64.AppImage` |
 | Windows portable | `NagaNetwork-<ver>-windows-x64.zip` |
 | Windows setup | `NagaNetwork-<ver>-windows-x64-setup.exe` |
 | Android | `NagaNetwork-<ver>-arm64-v8a.apk` |
+| iOS | `NagaNetwork-<ver>-ios.ipa` |
 
 Details: [RELEASES.md](docs/platforms/RELEASES.md).
 
@@ -61,5 +61,6 @@ Docs are in Russian:
 - [Linux](docs/platforms/LINUX.md)
 - [Windows](docs/platforms/WINDOWS.md)
 - [Android](docs/platforms/ANDROID.md)
+- [iOS](docs/platforms/IOS.md)
 - [Release assets](docs/platforms/RELEASES.md)
 - [sing-box](docs/engines/SING_BOX.md), [AmneziaWG](docs/engines/AMNEZIAWG.md), [olcRTC](docs/engines/OLCRTC.md)

@@ -119,3 +119,27 @@ func TestDiscoverBinaryFindsSibling(t *testing.T) {
 		t.Fatal("pinned sibling should be ready")
 	}
 }
+
+func TestOversizedStderrCannotBlockProcessReaping(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fixture")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "olcrtc")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nhead -c 1048576 /dev/zero >&2\nexit 17\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "olcrtc.version"), []byte(PinnedCommit), 0600); err != nil {
+		t.Fatal(err)
+	}
+	proc, err := Start(context.Background(), bin, "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proc.Stop()
+	select {
+	case <-proc.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("oversized line blocked child Wait")
+	}
+}

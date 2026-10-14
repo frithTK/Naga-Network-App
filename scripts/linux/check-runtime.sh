@@ -3,9 +3,16 @@ set -euo pipefail
 
 echo "Naga Network Linux runtime check"
 
-if command -v sing-box >/dev/null 2>&1; then
-  echo "sing-box: $(command -v sing-box)"
-  sing-box version | head -1
+sing_box_path=""
+control_path="$(readlink -f "${HOME}/.local/bin/naga-control" 2>/dev/null || true)"
+if [[ -n "${control_path}" && -x "$(dirname "${control_path}")/sing-box" ]]; then
+  sing_box_path="$(dirname "${control_path}")/sing-box"
+else
+  sing_box_path="$(command -v sing-box || true)"
+fi
+if [[ -n "${sing_box_path}" ]]; then
+  echo "sing-box: ${sing_box_path}"
+  "${sing_box_path}" version | head -1
 else
   echo "sing-box: NOT FOUND"
 fi
@@ -46,7 +53,7 @@ else
 fi
 
 incomplete=0
-if [[ ! -e /dev/net/tun ]] || [[ "${tun_mode}" != "660" ]] || [[ "${tun_group}" != "naga-network" ]] || ! command -v sing-box >/dev/null 2>&1; then
+if [[ ! -e /dev/net/tun ]] || [[ "${tun_mode}" != "660" ]] || [[ "${tun_group}" != "naga-network" ]] || [[ -z "${sing_box_path}" ]]; then
   incomplete=1
   echo "runtime prerequisites: incomplete"
 else

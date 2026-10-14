@@ -1,0 +1,7 @@
+{
+  "olcrtc_ready": false,
+  "runtime_ready": false,
+  "service": "naga-control",
+  "status": "ok",
+  "version": "1.2.5"
+}

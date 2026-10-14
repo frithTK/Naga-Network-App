@@ -103,6 +103,7 @@ bool get nagaUsesWindowsChrome =>
 String get nagaAppPlatform {
   if (nagaUsesWindowsChrome) return 'windows';
   if (nagaRunsOnAndroid) return 'android';
+  if (nagaRunsOnIOS) return 'ios';
   return 'linux';
 }
 
@@ -2104,7 +2105,8 @@ class DashboardPage extends StatefulWidget {
   State<DashboardPage> createState() => _DashboardPageState();
 }
 
-class _DashboardPageState extends State<DashboardPage> {
+class _DashboardPageState extends State<DashboardPage>
+    with WidgetsBindingObserver {
   ConnectionStatus _status = ConnectionStatus.disconnected;
   String _profileName = 'Профиль не импортирован';
   String _profileUrl = '';
@@ -2125,6 +2127,7 @@ class _DashboardPageState extends State<DashboardPage> {
   bool _isImportingProfile = false;
   bool _runtimeRequestInFlight = false;
   int _runtimeMisses = 0;
+  bool _installStatusRequestInFlight = false;
   bool _autoUpdate = true;
   bool _autoAppUpdate = true;
   AppUpdatePrefs _appUpdatePrefs = const AppUpdatePrefs();
@@ -2147,28 +2150,25 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _controlPlane = widget.controlPlane ?? ControlPlaneClient();
     _updater = AppUpdater(currentVersion: _uiVersion);
     _trayChannel.setMethodCallHandler(_handleTrayMethod);
     unawaited(_startDashboard());
-    _runtimePoller = Timer.periodic(
-      const Duration(seconds: 2),
-      (_) => _refreshRuntime(),
-    );
+    _runtimePoller = Timer.periodic(const Duration(seconds: 2), (_) {
+      unawaited(_refreshRuntime());
+      unawaited(_refreshAndroidInstallStatus());
+    });
     unawaited(_syncTray());
   }
 
   Future<void> _startDashboard() async {
-    if (nagaRunsOnAndroid) {
+    if (nagaNeedsSystemTunnel) {
       final token = await AndroidVpn.instance.waitForControlToken();
       if (token != null) _controlPlane.updateToken(token);
       await AndroidVpn.instance.waitUntilHealthy(_controlPlane);
     }
-    await Future.wait([
-      _loadUiVersion(),
-      _loadAppUpdatePrefs(),
-      _bootstrap(),
-    ]);
+    await Future.wait([_loadUiVersion(), _loadAppUpdatePrefs(), _bootstrap()]);
     if (!mounted) return;
     await _maybeAutoUpdateApp();
   }
@@ -2187,11 +2187,13 @@ class _DashboardPageState extends State<DashboardPage> {
     if (runningUnderFlutterTest()) return;
     final path = await resolveAppUpdatePrefsPath();
     final prefs = loadAppUpdatePrefs(path: path);
+    final installError = await _updater?.androidInstallError();
     if (!mounted) return;
     setState(() {
       _appUpdatePrefsPath = path;
       _appUpdatePrefs = prefs;
       _autoAppUpdate = prefs.autoInstall;
+      if (installError != null) _updateError = installError;
     });
   }
 
@@ -2205,11 +2207,35 @@ class _DashboardPageState extends State<DashboardPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _trayChannel.setMethodCallHandler(null);
     _runtimePoller?.cancel();
     _profileUpdater?.cancel();
     _updater?.close();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_refreshAndroidInstallStatus());
+    }
+  }
+
+  Future<void> _refreshAndroidInstallStatus() async {
+    if (!nagaRunsOnAndroid || _updateBusy || _installStatusRequestInFlight)
+      return;
+    _installStatusRequestInFlight = true;
+    try {
+      final error = await _updater?.androidInstallError();
+      if (!mounted || error == null) return;
+      setState(() {
+        _updateMessage = null;
+        _updateError = error;
+      });
+    } finally {
+      _installStatusRequestInFlight = false;
+    }
   }
 
   Future<void> _loadUiVersion() async {
@@ -2295,7 +2321,7 @@ class _DashboardPageState extends State<DashboardPage> {
     } on ControlPlaneException {
       // Exit must remain available even if the runtime cannot be stopped.
     }
-    if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
+    if (nagaNeedsSystemTunnel) await AndroidVpn.instance.stop();
     try {
       await _trayChannel.invokeMethod<void>('terminate');
     } on MissingPluginException {
@@ -2420,8 +2446,7 @@ class _DashboardPageState extends State<DashboardPage> {
       );
 
   RoutingPolicy get _effectiveRoutingPolicy =>
-      _routingPolicy ??
-      const RoutingPolicy(mode: 'all_vpn', apps: []);
+      _routingPolicy ?? const RoutingPolicy(mode: 'all_vpn', apps: []);
 
   Future<void> _saveConnectionPolicy(ConnectionPolicy value) async {
     try {
@@ -2442,7 +2467,7 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   void _selectTrafficMode(String trafficMode) {
-    if (nagaRunsOnAndroid && trafficMode == 'system_proxy') {
+    if (nagaNeedsSystemTunnel && trafficMode == 'system_proxy') {
       return;
     }
     final current = _effectiveConnectionPolicy;
@@ -2782,9 +2807,6 @@ class _DashboardPageState extends State<DashboardPage> {
     } on ControlPlaneException {
       if (!mounted) return;
       _runtimeMisses++;
-      if (_status == ConnectionStatus.connecting) {
-        return;
-      }
       if (_runtimeMisses >= 3) {
         setState(() => _controlPlaneReachable = false);
       }
@@ -2823,11 +2845,11 @@ class _DashboardPageState extends State<DashboardPage> {
     }
     try {
       final runtime = await _controlPlane.stopRuntime();
-      if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
+      if (nagaNeedsSystemTunnel) await AndroidVpn.instance.stop();
       if (mounted) _applyRuntime(runtime);
       return true;
     } on ControlPlaneException catch (error) {
-      if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
+      if (nagaNeedsSystemTunnel) await AndroidVpn.instance.stop();
       if (mounted) {
         setState(() => _updateError = error.message);
       }
@@ -2986,11 +3008,7 @@ class _DashboardPageState extends State<DashboardPage> {
       final check = _updateCheck;
       final kind = _updater?.kind ?? detectInstallKind();
       if (check == null ||
-          !canAutoApplyUpdate(
-            result: check,
-            kind: kind,
-            autoInstall: true,
-          )) {
+          !canAutoApplyUpdate(result: check, kind: kind, autoInstall: true)) {
         return;
       }
       await _installAppUpdate(auto: true);
@@ -3093,10 +3111,10 @@ class _DashboardPageState extends State<DashboardPage> {
       _runtimeRequestInFlight = true;
       try {
         final runtime = await _controlPlane.stopRuntime();
-        if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
+        if (nagaNeedsSystemTunnel) await AndroidVpn.instance.stop();
         if (mounted) _applyRuntime(runtime);
       } on ControlPlaneException catch (error) {
-        if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
+        if (nagaNeedsSystemTunnel) await AndroidVpn.instance.stop();
         if (!mounted) return;
         setState(() => _status = ConnectionStatus.error);
         ScaffoldMessenger.of(context)
@@ -3142,7 +3160,7 @@ class _DashboardPageState extends State<DashboardPage> {
         _runtime = runtime;
       });
       if (runtime.status != 'connected') {
-        if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
+        if (nagaNeedsSystemTunnel) await AndroidVpn.instance.stop();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -3153,14 +3171,12 @@ class _DashboardPageState extends State<DashboardPage> {
         );
       }
     } on ControlPlaneException catch (error) {
-      if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
+      if (nagaNeedsSystemTunnel) await AndroidVpn.instance.stop();
       if (!mounted) return;
       setState(() => _status = ConnectionStatus.error);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            _friendlyRuntimeError(error.message) ?? error.message,
-          ),
+          content: Text(_friendlyRuntimeError(error.message) ?? error.message),
         ),
       );
     } finally {
@@ -3179,11 +3195,17 @@ class _DashboardPageState extends State<DashboardPage> {
       .toList(growable: false);
 
   Future<bool> _prepareAndroidTunnel() async {
-    if (!nagaRunsOnAndroid) return true;
+    if (!nagaNeedsSystemTunnel) return true;
     if (_connectingOlc && !_olcrtcReady) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('olcRTC недоступен на Android.')),
+          SnackBar(
+            content: Text(
+              nagaRunsOnIOS
+                  ? 'olcRTC недоступен на iPhone.'
+                  : 'olcRTC недоступен на Android.',
+            ),
+          ),
         );
       }
       return false;
@@ -3193,12 +3215,12 @@ class _DashboardPageState extends State<DashboardPage> {
     return AndroidVpn.instance.start(
       engine: _connectingOlc ? 'olcrtc' : 'singbox',
       routing: _effectiveRoutingPolicy.mode,
-      packages: _androidSplitPackages,
+      packages: nagaRunsOnAndroid ? _androidSplitPackages : const [],
     );
   }
 
   Future<void> _rebuildAndroidVpnIfConnected() async {
-    if (!nagaRunsOnAndroid || !_isConnected || _profileId == null) return;
+    if (!nagaNeedsSystemTunnel || !_isConnected || _profileId == null) return;
     try {
       await _controlPlane.stopRuntime();
       await AndroidVpn.instance.stop();
@@ -3208,7 +3230,7 @@ class _DashboardPageState extends State<DashboardPage> {
       }
       final runtime = await _controlPlane.startRuntime(_profileId!);
       if (mounted) _applyRuntime(runtime);
-      if (runtime.status != 'connected' && nagaRunsOnAndroid) {
+      if (runtime.status != 'connected' && nagaNeedsSystemTunnel) {
         await AndroidVpn.instance.stop();
       }
     } on ControlPlaneException catch (error) {
@@ -3349,7 +3371,7 @@ class _DashboardPageState extends State<DashboardPage> {
       if (confirmed != true || !mounted) return;
       if (!throughTunnel) {
         await _controlPlane.stopRuntime();
-        if (nagaRunsOnAndroid) await AndroidVpn.instance.stop();
+        if (nagaNeedsSystemTunnel) await AndroidVpn.instance.stop();
       }
       final saved = useServerFetch
           ? await _controlPlane.importProfile(url)
@@ -4163,10 +4185,7 @@ String nagaNodePingLabel(UnifiedNode node) {
   return '—';
 }
 
-final _nagaFlagPrefix = RegExp(
-  r'^[\u{1F1E6}-\u{1F1FF}]{2}',
-  unicode: true,
-);
+final _nagaFlagPrefix = RegExp(r'^[\u{1F1E6}-\u{1F1FF}]{2}', unicode: true);
 
 String nagaNodeFlag(String tag) {
   final match = _nagaFlagPrefix.firstMatch(tag.trim());
@@ -4899,14 +4918,11 @@ class _TrafficModeSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (nagaRunsOnAndroid) {
+    if (nagaNeedsSystemTunnel) {
       return const Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Режим трафика',
-            style: TextStyle(fontWeight: FontWeight.w600),
-          ),
+          Text('Режим трафика', style: TextStyle(fontWeight: FontWeight.w600)),
           SizedBox(height: 8),
           Text(
             'Трафик устройства направляется по правилам маршрутизации.',
@@ -7138,7 +7154,8 @@ class _AppUpdateTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final kind = detectInstallKind();
     final behind = controlPlaneBehind(uiVersion, controlVersion);
-    final canInstall = check?.newerAvailable == true &&
+    final canInstall =
+        check?.newerAvailable == true &&
         (check?.missingAssets.isEmpty ?? false) &&
         kind != UpdateInstallKind.linuxDev;
     String detail = 'Текущая версия $uiVersion';
@@ -7155,10 +7172,7 @@ class _AppUpdateTile extends StatelessWidget {
         children: [
           Text(
             detail,
-            style: TextStyle(
-              color: behind ? _warning : _muted,
-              height: 1.4,
-            ),
+            style: TextStyle(color: behind ? _warning : _muted, height: 1.4),
           ),
           if (message != null) ...[
             const SizedBox(height: 8),

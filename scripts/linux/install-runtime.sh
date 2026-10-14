@@ -2,6 +2,7 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "${project_dir}/packaging/linux/runtime-lib.sh"
 binary_path="${HOME}/.local/bin/naga-control"
 data_dir="${HOME}/.local/share/naga-network"
 token_file="${data_dir}/control.token"
@@ -64,7 +65,13 @@ naga_version="$(awk '/^version:/ { print $2; exit }' "${project_dir}/app/pubspec
 if [[ -z "${naga_version}" ]]; then
   naga_version="dev"
 fi
-go build -buildvcs=false -ldflags "-X naga.network/core/version.Version=${naga_version}" -o "${binary_path}" "${project_dir}/cmd/naga-control"
+build_tmp="$(mktemp -d "$(dirname "${binary_path}")/.naga-dev-XXXXXXXX")"
+trap 'rm -rf -- "${build_tmp}"' EXIT
+go build -buildvcs=false -ldflags "-X naga.network/core/version.Version=${naga_version}" \
+  -o "${build_tmp}/naga-control" "${project_dir}/cmd/naga-control"
+# Replacing the launcher must not follow a symlink into an AppImage cache.
+mv -Tf -- "${build_tmp}/naga-control" "${binary_path}"
+rm -rf -- "${build_tmp}"
 
 if [[ ! -s "${token_file}" ]]; then
 	token_tmp="$(mktemp "${token_file}.tmp.XXXXXX")"
@@ -95,12 +102,14 @@ if [[ "$(stat -c '%a' /dev/net/tun)" != "660" ]] || [[ "$(stat -c '%G' /dev/net/
 	stat -c '%A %U:%G %n' /dev/net/tun >&2 || true
 	exit 1
 fi
-unit_tmp="$(mktemp)"
-trap 'rm -f "${polkit_tmp-}" "${token_tmp-}" "${unit_tmp-}"' EXIT
-sed "s|@NAGA_HOME@|${user_home}|g" "${unit_source}" >"${unit_tmp}"
+unit_work="$(mktemp -d)"
+unit_tmp="${unit_work}/naga-network-control@.service"
+trap 'rm -f "${polkit_tmp-}" "${token_tmp-}"; rm -rf -- "${unit_work}"' EXIT
+naga_render_service "${unit_source}" "${user_home}" "$(id -g)" "${unit_tmp}"
+systemd-analyze verify "${unit_tmp}"
 sudo install -Dm644 "${unit_tmp}" "${unit_target}"
 polkit_tmp="$(mktemp)"
-trap 'rm -f "${polkit_tmp}" "${token_tmp-}" "${unit_tmp-}"' EXIT
+trap 'rm -f "${polkit_tmp}" "${token_tmp-}"; rm -rf -- "${unit_work}"' EXIT
 sed "s/@NAGA_USER@/${user_name}/g" "${polkit_source}" > "${polkit_tmp}"
 sudo install -Dm644 "${polkit_tmp}" "${polkit_target}"
 # Do not leave a partial file capability on sing-box: it would clear the
