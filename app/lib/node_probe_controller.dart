@@ -71,10 +71,14 @@ class NodeProbeController extends ChangeNotifier {
         afterRevision: _fullSnapshot ? 0 : job?.revision ?? 0,
       );
       if (_disposed || epoch != _epoch) return;
+      final hadError = progressError != null;
       progressError = null;
       if (update != null) {
-        _accept(update, reset: _fullSnapshot);
+        final changed = _accept(update, reset: _fullSnapshot);
+        if (hadError && !changed) _emit();
         _fullSnapshot = false;
+      } else if (hadError) {
+        _emit();
       }
     } on ControlPlaneException catch (error) {
       if (!_disposed && epoch == _epoch) {
@@ -100,12 +104,12 @@ class NodeProbeController extends ChangeNotifier {
     }
   }
 
-  void _accept(NodeProbeJob update, {bool reset = false}) {
+  bool _accept(NodeProbeJob update, {bool reset = false}) {
     if (!reset &&
         job != null &&
         update.id == job!.id &&
-        update.revision < job!.revision)
-      return;
+        update.revision <= job!.revision)
+      return false;
     if (reset || job?.id != update.id) _nodes.clear();
     job = update;
     if (update.invalidated) {
@@ -132,6 +136,7 @@ class NodeProbeController extends ChangeNotifier {
         }
       }
     }
+    return true;
   }
 
   Future<List<UnifiedNode>> start() async {
@@ -193,7 +198,10 @@ class NodeProbeController extends ChangeNotifier {
     _epoch++;
     try {
       final update = await client.cancelNodeProbeJob(id);
-      if (!_disposed && job?.id == id) _accept(update);
+      if (!_disposed && job?.id == id) {
+        _epoch++;
+        _accept(update);
+      }
     } on ControlPlaneException catch (error) {
       if (!_disposed && job?.id == id) {
         progressError = error.message;

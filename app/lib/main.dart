@@ -4205,6 +4205,7 @@ String nagaNodePingLabel(UnifiedNode node) {
   if (node.probeStatus == 'failed') {
     return 'нет ответа';
   }
+  if (node.probePhase == 'queued') return 'очередь';
   if (node.probePhase == 'cancelled') return 'отмена';
   if (node.probePhase == 'skipped') return 'пропуск';
   return '—';
@@ -4386,7 +4387,22 @@ class _NagaNodesViewState extends State<NagaNodesView> {
 
   List<UnifiedNode>? _probed;
 
-  List<UnifiedNode> get _nodes => _probed ?? widget.nodes;
+  List<UnifiedNode> get _nodes {
+    final base = _probed ?? widget.nodes;
+    final controller = widget.probeController;
+    if (controller == null || controller.job?.invalidated == true) return base;
+    final updates = {for (final node in controller.nodes) node.id: node};
+    return [for (final node in base) _applyProgress(node, updates[node.id])];
+  }
+
+  UnifiedNode _applyProgress(UnifiedNode base, UnifiedNode? update) {
+    if (update == null ||
+        (base.profileRevision > 0 &&
+            update.profileRevision > 0 &&
+            update.profileRevision < base.profileRevision))
+      return base;
+    return nagaPreferProbedNode(update, base);
+  }
 
   @override
   void didUpdateWidget(covariant NagaNodesView oldWidget) {
@@ -4525,10 +4541,12 @@ class _NagaNodesViewState extends State<NagaNodesView> {
                     : const Icon(Icons.speed_rounded),
                 label: Text(
                   _probing
-                      ? (const {
-                              'cancelling',
-                              'failed',
-                            }.contains(widget.probeController?.job?.state)
+                      ? (widget.probeController?.job == null
+                            ? 'Проверяем…'
+                            : const {
+                                'cancelling',
+                                'failed',
+                              }.contains(widget.probeController?.job?.state)
                             ? 'Завершаем проверку…'
                             : 'Отменить проверку')
                       : 'Проверить',
@@ -4672,9 +4690,9 @@ class _NagaNodesViewState extends State<NagaNodesView> {
               width: 56,
               child:
                   _probing &&
-                      (node.probePhase.isEmpty ||
+                      ((node.probePhase.isEmpty &&
+                              widget.probeController == null) ||
                           const {
-                            'queued',
                             'preparing',
                             'checking',
                           }.contains(node.probePhase))
