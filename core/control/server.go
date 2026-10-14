@@ -221,6 +221,10 @@ func (s Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "control-plane authorization required")
 		return
 	}
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/runtime/stop" && s.Runtime != nil {
+		finishStop := s.Runtime.prepareStop()
+		defer finishStop()
+	}
 	if r.Method != http.MethodGet &&
 		!(r.Method == http.MethodPost && r.URL.Path == "/v1/subscriptions/preview") &&
 		!(r.Method == http.MethodPost && r.URL.Path == "/v1/nodes/probe") {
@@ -1512,7 +1516,6 @@ func writeImportSnapshotError(w http.ResponseWriter, err error) {
 }
 
 func snapshotFromConfig(raw []byte, name string) subscription.Snapshot {
-	raw = bytes.TrimSpace(bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF}))
 	return subscription.Snapshot{
 		Config:       raw,
 		ProfileTitle: profileTitleFromFileName(name),
@@ -1539,6 +1542,17 @@ func profileTitleFromFileName(name string) string {
 }
 
 func (s Server) validateSnapshot(r *http.Request, snapshot subscription.Snapshot) (subscription.Snapshot, error) {
+	original := snapshot.Config
+	snapshot.Config = profile.ParsingBytes(original)
+	validated, err := s.validateParsingSnapshot(r, snapshot)
+	if err != nil {
+		return subscription.Snapshot{}, err
+	}
+	validated.Config = append([]byte(nil), original...)
+	return validated, nil
+}
+
+func (s Server) validateParsingSnapshot(r *http.Request, snapshot subscription.Snapshot) (subscription.Snapshot, error) {
 	if olcrtc.IsDocument(snapshot.Config) {
 		if _, err := olcrtc.ParseDocument(snapshot.Config); err != nil {
 			return subscription.Snapshot{}, err
@@ -1603,6 +1617,7 @@ func envelopeAmneziaSelected(config []byte, mode string) bool {
 }
 
 func snapshotEngine(snapshot subscription.Snapshot) profile.Engine {
+	snapshot.Config = profile.ParsingBytes(snapshot.Config)
 	if olcrtc.IsDocument(snapshot.Config) || olcrtc.IsURI(snapshot.Config) {
 		return profile.EngineOlcRTC
 	}

@@ -26,5 +26,6 @@ func (c *RuntimeController) startAndroidHevLocked(profileID, ipv4 string, socksP
 	if err := androidvpn.StartHev(binary, path); err != nil {
 		return engineolc.LinkState{}, err
 	}
+	c.androidBridge = androidvpn.CurrentBridge()
 	return engineolc.LinkState{}, nil
 }

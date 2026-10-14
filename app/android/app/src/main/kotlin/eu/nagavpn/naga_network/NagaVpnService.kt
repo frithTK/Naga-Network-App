@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.ResultReceiver
 import android.system.OsConstants
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -29,7 +30,15 @@ class NagaVpnService : VpnService() {
             return START_NOT_STICKY
         }
         startForegroundNotification()
-        if (!establish(intent)) {
+        val receiver = if (Build.VERSION.SDK_INT >= 33) {
+            intent?.getParcelableExtra(EXTRA_READY_RECEIVER, ResultReceiver::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra<ResultReceiver>(EXTRA_READY_RECEIVER)
+        }
+        val ready = try { establish(intent) } catch (_: Exception) { false }
+        receiver?.send(if (ready) RESULT_READY else RESULT_FAILED, null)
+        if (!ready) {
             teardown()
             stopSelf()
             return START_NOT_STICKY
@@ -76,7 +85,7 @@ class NagaVpnService : VpnService() {
             NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_stat_naga)
                 .setContentTitle("Naga Network")
-                .setContentText("VPN подключён")
+                .setContentText("VPN-интерфейс активен")
                 .setContentIntent(open)
                 .addAction(0, "Отключить", disconnect)
                 .setOngoing(true)
@@ -97,6 +106,11 @@ class NagaVpnService : VpnService() {
         val engine = intent?.getStringExtra(EXTRA_ENGINE) ?: ENGINE_SINGBOX
         val routing = intent?.getStringExtra(EXTRA_ROUTING) ?: "all_vpn"
         val packages = intent?.getStringArrayListExtra(EXTRA_PACKAGES) ?: arrayListOf()
+        if (engine != ENGINE_SINGBOX && engine != ENGINE_OLC) return false
+        if (routing !in listOf("all_vpn", "all_direct", "selected_vpn", "selected_direct")) return false
+        // No allowed apps means all apps to VpnService.Builder. Reject an
+        // empty whitelist instead of silently capturing the entire device.
+        if (routing == "selected_vpn" && packages.none { it.isNotBlank() && it != packageName }) return false
         val ipv4 = if (engine == ENGINE_OLC) OlcIPv4 else SingBoxIPv4
         val prefix = if (engine == ENGINE_OLC) OlcPrefix else SingBoxPrefix
         val builder =
@@ -187,6 +201,9 @@ class NagaVpnService : VpnService() {
 
     companion object {
         const val ACTION_DISCONNECT = "eu.nagavpn.naga_network.VPN_DISCONNECT"
+        const val EXTRA_READY_RECEIVER = "ready_receiver"
+        const val RESULT_READY = 1
+        const val RESULT_FAILED = 0
         const val EXTRA_ENGINE = "engine"
         const val EXTRA_ROUTING = "routing"
         const val EXTRA_PACKAGES = "packages"

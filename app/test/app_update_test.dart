@@ -26,24 +26,20 @@ void main() {
   });
 
   test('parseSha256Digest accepts GitHub digest field', () {
-    const hex = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const hex =
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
     expect(parseSha256Digest('sha256:$hex'), hex);
     expect(parseSha256Digest(hex.toUpperCase()), hex);
     expect(parseSha256Digest('md5:abc'), isNull);
   });
 
-  test('required Linux assets include naga-control', () {
-    expect(
-      requiredAssetNames(UpdateInstallKind.linuxAppImage, '1.2.5'),
-      [
-        'NagaNetwork-1.2.5-x86_64.AppImage',
-        'naga-control-linux-x86_64',
-      ],
-    );
-    expect(
-      requiredAssetNames(UpdateInstallKind.android, '1.2.5'),
-      ['NagaNetwork-1.2.5-arm64-v8a.apk'],
-    );
+  test('Linux release requires only the self-contained AppImage', () {
+    expect(requiredAssetNames(UpdateInstallKind.linuxAppImage, '1.2.5'), [
+      'NagaNetwork-1.2.5-x86_64.AppImage',
+    ]);
+    expect(requiredAssetNames(UpdateInstallKind.android, '1.2.5'), [
+      'NagaNetwork-1.2.5-arm64-v8a.apk',
+    ]);
   });
 
   test('detectInstallKind treats APPIMAGE as packaged Linux', () {
@@ -52,7 +48,9 @@ void main() {
         isLinux: true,
         isWindows: false,
         isAndroid: false,
-        environment: const {'APPIMAGE': '/home/me/NagaNetwork-1.2.4-x86_64.AppImage'},
+        environment: const {
+          'APPIMAGE': '/home/me/NagaNetwork-1.2.4-x86_64.AppImage',
+        },
       ),
       UpdateInstallKind.linuxAppImage,
     );
@@ -80,7 +78,10 @@ void main() {
       ],
     });
     expect(release.version, '1.2.5');
-    expect(release.assetNamed('naga-control-linux-x86_64')?.url, contains('control'));
+    expect(
+      release.assetNamed('naga-control-linux-x86_64')?.url,
+      contains('control'),
+    );
   });
 
   test('checkLatest sends User-Agent and finds a newer release', () async {
@@ -122,7 +123,10 @@ void main() {
       currentVersion: '1.3.0',
       kind: UpdateInstallKind.windowsPortable,
       client: MockClient((request) async {
-        return http.Response(jsonEncode({'tag_name': 'v1.2.5', 'assets': []}), 200);
+        return http.Response(
+          jsonEncode({'tag_name': 'v1.2.5', 'assets': []}),
+          200,
+        );
       }),
     );
     addTearDown(updater.close);
@@ -149,7 +153,7 @@ void main() {
     );
   });
 
-  test('checkLatest reports missing linux runtime asset', () async {
+  test('checkLatest accepts Linux release with only the AppImage', () async {
     final updater = AppUpdater(
       currentVersion: '1.2.4',
       kind: UpdateInstallKind.linuxAppImage,
@@ -171,7 +175,7 @@ void main() {
     addTearDown(updater.close);
     final result = await updater.checkLatest();
     expect(result.newerAvailable, isTrue);
-    expect(result.missingAssets, ['naga-control-linux-x86_64']);
+    expect(result.missingAssets, isEmpty);
   });
 
   test('checkLatest reuses ETag cache on 304', () async {
@@ -206,62 +210,67 @@ void main() {
     expect(calls, 2);
   });
 
-  test('downloadRequired verifies sha256 and refuses linux-dev apply', () async {
-    const payload = 'naga';
-    final digest = sha256.convert(utf8.encode(payload)).toString();
-    final temp = Directory.systemTemp.createTempSync('naga-update-test');
-    addTearDown(() => temp.deleteSync(recursive: true));
-    final updater = AppUpdater(
-      currentVersion: '1.2.4',
-      kind: UpdateInstallKind.android,
-      tempDirectory: () => temp,
-      client: MockClient((request) async {
-        if (request.url.path.contains('releases/latest')) {
-          return http.Response('no', 500);
-        }
-        return http.Response(
-          payload,
-          200,
-          headers: {'content-type': 'application/octet-stream'},
-        );
-      }),
-    );
-    addTearDown(updater.close);
-    final files = await updater.downloadRequired(
-      GithubRelease.fromJson({
-        'tag_name': 'v1.2.5',
-        'assets': [
-          {
-            'name': 'NagaNetwork-1.2.5-arm64-v8a.apk',
-            'browser_download_url': 'https://example.test/app.apk',
-            'digest': 'sha256:$digest',
-            'size': payload.length,
-          },
-        ],
-      }),
-      '1.2.5',
-    );
-    expect(files, hasLength(1));
-    expect(files.single.readAsStringSync(), payload);
-
-    final dev = AppUpdater(
-      currentVersion: '1.2.4',
-      kind: UpdateInstallKind.linuxDev,
-      client: MockClient((request) async => http.Response('{}', 200)),
-    );
-    addTearDown(dev.close);
-    expect(
-      dev.downloadRequired(
-        GithubRelease.fromJson({'tag_name': 'v1.2.5', 'assets': []}),
+  test(
+    'downloadRequired verifies sha256 and refuses linux-dev apply',
+    () async {
+      const payload = 'naga';
+      final digest = sha256.convert(utf8.encode(payload)).toString();
+      final temp = Directory.systemTemp.createTempSync('naga-update-test');
+      addTearDown(() => temp.deleteSync(recursive: true));
+      final updater = AppUpdater(
+        currentVersion: '1.2.4',
+        kind: UpdateInstallKind.android,
+        tempDirectory: () => temp,
+        client: MockClient((request) async {
+          if (request.url.path.contains('releases/latest')) {
+            return http.Response('no', 500);
+          }
+          return http.Response(
+            payload,
+            200,
+            headers: {'content-type': 'application/octet-stream'},
+          );
+        }),
+      );
+      addTearDown(updater.close);
+      final files = await updater.downloadRequired(
+        GithubRelease.fromJson({
+          'tag_name': 'v1.2.5',
+          'assets': [
+            {
+              'name': 'NagaNetwork-1.2.5-arm64-v8a.apk',
+              'browser_download_url': 'https://example.test/app.apk',
+              'digest': 'sha256:$digest',
+              'size': payload.length,
+            },
+          ],
+        }),
         '1.2.5',
-      ),
-      throwsA(isA<AppUpdateException>().having(
-        (error) => error.message,
-        'message',
-        contains('AppImage'),
-      )),
-    );
-  });
+      );
+      expect(files, hasLength(1));
+      expect(files.single.readAsStringSync(), payload);
+
+      final dev = AppUpdater(
+        currentVersion: '1.2.4',
+        kind: UpdateInstallKind.linuxDev,
+        client: MockClient((request) async => http.Response('{}', 200)),
+      );
+      addTearDown(dev.close);
+      expect(
+        dev.downloadRequired(
+          GithubRelease.fromJson({'tag_name': 'v1.2.5', 'assets': []}),
+          '1.2.5',
+        ),
+        throwsA(
+          isA<AppUpdateException>().having(
+            (error) => error.message,
+            'message',
+            contains('AppImage'),
+          ),
+        ),
+      );
+    },
+  );
 
   test('downloadRequired rejects digest mismatch', () async {
     final temp = Directory.systemTemp.createTempSync('naga-update-bad');
@@ -288,25 +297,28 @@ void main() {
         }),
         '1.2.5',
       ),
-      throwsA(isA<AppUpdateException>().having(
-        (error) => error.message,
-        'message',
-        contains('Контрольная сумма'),
-      )),
+      throwsA(
+        isA<AppUpdateException>().having(
+          (error) => error.message,
+          'message',
+          contains('Контрольная сумма'),
+        ),
+      ),
     );
   });
 
   testWidgets('applyAndroid uses MethodChannel', (tester) async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
-      const MethodChannel(updateChannelName),
-      (call) async {
-        expect(call.method, 'applyAndroid');
-        expect((call.arguments as Map)['apkPath'], contains('.apk'));
-        return null;
-      },
+        .setMockMethodCallHandler(const MethodChannel(updateChannelName), (
+          call,
+        ) async {
+          expect(call.method, 'applyAndroid');
+          expect((call.arguments as Map)['apkPath'], contains('.apk'));
+          return null;
+        });
+    final apk = File(
+      p.join(Directory.systemTemp.path, 'NagaNetwork-1.2.5-arm64-v8a.apk'),
     );
-    final apk = File(p.join(Directory.systemTemp.path, 'NagaNetwork-1.2.5-arm64-v8a.apk'));
     apk.writeAsStringSync('apk');
     addTearDown(() {
       if (apk.existsSync()) apk.deleteSync();
@@ -361,7 +373,7 @@ void main() {
           currentVersion: '1.2.4',
           latestVersion: '1.2.5',
           newerAvailable: true,
-          missingAssets: const ['naga-control-linux-x86_64'],
+          missingAssets: const ['NagaNetwork-1.2.5-x86_64.AppImage'],
         ),
         kind: UpdateInstallKind.linuxAppImage,
         autoInstall: true,
@@ -374,22 +386,23 @@ void main() {
     final now = DateTime.utc(2026, 10, 7, 15);
     expect(const AppUpdatePrefs().dueForCheck(now), isTrue);
     expect(
-      AppUpdatePrefs(
-        lastCheckUtc: now.subtract(const Duration(hours: 11)),
-      ).dueForCheck(now),
+      AppUpdatePrefs(lastCheckUtc: now.subtract(const Duration(hours: 11)))
+          .dueForCheck(now),
       isFalse,
     );
     expect(
-      AppUpdatePrefs(
-        lastCheckUtc: now.subtract(const Duration(hours: 12)),
-      ).dueForCheck(now),
+      AppUpdatePrefs(lastCheckUtc: now.subtract(const Duration(hours: 12)))
+          .dueForCheck(now),
       isTrue,
     );
   });
 
   test('AppUpdatePrefs round-trip on disk', () {
     final file = File(
-      p.join(Directory.systemTemp.createTempSync('naga-prefs').path, 'app-update.json'),
+      p.join(
+        Directory.systemTemp.createTempSync('naga-prefs').path,
+        'app-update.json',
+      ),
     );
     addTearDown(() => file.parent.deleteSync(recursive: true));
     final original = AppUpdatePrefs(

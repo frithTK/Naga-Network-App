@@ -88,3 +88,14 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+// Release artifacts require the configured release key. A developer may opt
+// into a local debug-signed release explicitly; publishing jobs do not do so.
+tasks.matching { it.name == "validateSigningRelease" }.configureEach {
+    doFirst {
+        if (!keystorePropertiesFile.exists() &&
+            providers.gradleProperty("nagaAllowDebugSigning").orNull != "true") {
+            throw GradleException("Release signing requires key.properties; use -PnagaAllowDebugSigning=true only for local development.")
+        }
+    }
+}

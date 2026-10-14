@@ -204,11 +204,11 @@ func ApplySubscriptionHeaders(snapshot *Snapshot, header http.Header) error {
 		snapshot.ProfileTitle = title
 	}
 	if raw := strings.TrimSpace(header.Get("profile-update-interval")); raw != "" {
-		days, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || days <= 0 || days > 365 {
+		hours, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || hours <= 0 || hours > 365*24 {
 			return errors.New("profile-update-interval is invalid")
 		}
-		snapshot.UpdateInterval = time.Duration(days) * 24 * time.Hour
+		snapshot.UpdateInterval = time.Duration(hours) * time.Hour
 	}
 	if name := strings.TrimSpace(header.Get("isp-name")); name != "" {
 		snapshot.ProviderName = name

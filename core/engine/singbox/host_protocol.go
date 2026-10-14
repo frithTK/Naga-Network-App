@@ -1,15 +1,16 @@
 package singbox
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 )
 
 type tunHostRequest struct {
 	ConfigPath string   `json:"config_path"`
 	BinaryPath string   `json:"binary_path"`
-	LogPath    string   `json:"log_path,omitempty"`
 	Env        []string `json:"env,omitempty"`
 }
 
@@ -69,4 +70,34 @@ func tunHostReplyError(reply tunHostReply, decodeErr error) error {
 		return nil
 	}
 	return errors.New(message)
+}
+
+// Privileged peers accept only the finite start protocol; ordinary clients do
+// not get to choose host output files or arbitrary process environment values.
+func decodeTunHostRequest(reader io.Reader) (tunHostRequest, error) {
+	var request tunHostRequest
+	decoder := json.NewDecoder(io.LimitReader(reader, 64<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return request, errors.New("invalid TUN host request")
+	}
+	if request.ConfigPath == "" || request.BinaryPath == "" {
+		return request, errors.New("TUN host request is incomplete")
+	}
+	allowed := map[string]bool{
+		"ENABLE_DEPRECATED_LEGACY_DNS_SERVERS=true":      true,
+		"ENABLE_DEPRECATED_OUTBOUND_DNS_RULE_ITEM=true":  true,
+		"ENABLE_DEPRECATED_MISSING_DOMAIN_RESOLVER=true": true,
+	}
+	if len(request.Env) > len(allowed) {
+		return request, errors.New("unexpected TUN host environment")
+	}
+	seen := make(map[string]bool)
+	for _, value := range request.Env {
+		if !allowed[value] || seen[value] {
+			return request, errors.New("unexpected TUN host environment")
+		}
+		seen[value] = true
+	}
+	return request, nil
 }

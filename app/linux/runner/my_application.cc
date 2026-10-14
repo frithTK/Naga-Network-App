@@ -1,5 +1,7 @@
 #include "my_application.h"
 
+#include <unistd.h>
+
 #include <libayatana-appindicator/app-indicator.h>
 #include <flutter_linux/flutter_linux.h>
 #include <gio/gio.h>
@@ -263,7 +265,8 @@ static void update_method_call_cb(FlMethodChannel* channel,
       response = FL_METHOD_RESPONSE(fl_method_error_response_new(
           "path", "AppImage path is required", nullptr));
     } else {
-      gchar* argv[] = {path, nullptr};
+      g_autofree gchar* previous_pid = g_strdup_printf("%d", getpid());
+      gchar* argv[] = {path, (gchar*)"--wait-for-pid", previous_pid, nullptr};
       g_autoptr(GError) spawn_error = nullptr;
       if (!g_spawn_async(nullptr, argv, nullptr,
                          (GSpawnFlags)(G_SPAWN_DO_NOT_REAP_CHILD), nullptr,

@@ -1,0 +1,8 @@
+{
+  "mode": "auto",
+  "network_class": "unknown",
+  "revision": 0,
+  "schema_version": 1,
+  "traffic_mode": "tun",
+  "tuic_fallback_enabled": true
+}

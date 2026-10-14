@@ -8,8 +8,8 @@ Type=simple
 User=%i
 Group=%i
 SupplementaryGroups=naga-network
-WorkingDirectory=@NAGA_HOME@/.local/share/naga-network
-ExecStart=@NAGA_HOME@/.local/bin/naga-control --sing-box=/usr/bin/sing-box --production --token-file=@NAGA_HOME@/.local/share/naga-network/control.token
+WorkingDirectory=@NAGA_WORKING_HOME@/.local/share/naga-network
+ExecStart="@NAGA_HOME@/.local/bin/naga-control" --production --token-file="@NAGA_HOME@/.local/share/naga-network/control.token"
 Restart=on-failure
 RestartSec=2s
 NoNewPrivileges=true

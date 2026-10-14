@@ -2,6 +2,9 @@ package control
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"naga.network/core/androidvpn"
 	"os"
 	"strconv"
 	"strings"
@@ -17,6 +20,9 @@ func (c *RuntimeController) startOlcStatsLocked() {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.olcStatsCancel = cancel
 	go c.pollOlcStats(ctx)
+	if c.olcProc != nil {
+		go c.watchOlcSession(ctx, c.olcProc, c.olcHevDone, c.androidBridge)
+	}
 }
 
 func (c *RuntimeController) stopOlcStatsLocked() {
@@ -40,12 +46,20 @@ func (c *RuntimeController) pollOlcStats(ctx context.Context) {
 			tx, rx, err := readIfaceBytes(engineolc.TunnelIface)
 			if err != nil {
 				c.mu.Lock()
+				if ctx.Err() != nil {
+					c.mu.Unlock()
+					return
+				}
 				c.olcStatsOK = false
 				c.mu.Unlock()
 				havePrev = false
 				continue
 			}
 			c.mu.Lock()
+			if ctx.Err() != nil {
+				c.mu.Unlock()
+				return
+			}
 			c.olcUpload = tx
 			c.olcDownload = rx
 			if havePrev {
@@ -69,4 +83,31 @@ func readCounter(path string) (int64, error) {
 		return 0, err
 	}
 	return strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+}
+
+func (c *RuntimeController) watchOlcSession(ctx context.Context, process *engineolc.Command, hevDone <-chan struct{}, bridge *androidvpn.Bridge) {
+	var bridgeDone <-chan struct{}
+	if bridge != nil {
+		bridgeDone = bridge.Done()
+	}
+	select {
+	case <-ctx.Done():
+		return
+	case <-process.Done():
+	case <-hevDone:
+	case <-bridgeDone:
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ctx.Err() != nil || c.olcProc != process {
+		return
+	}
+	err := errors.New("olcRTC process exited unexpectedly: " + process.ExitReason())
+	if bridge != nil && bridge.Failure() != nil {
+		err = bridge.Failure()
+	}
+	err = errors.Join(err, c.stopOlcRTCLocked())
+	c.olcFailed = true
+	c.lastError = safeRuntimeError(fmt.Errorf("VPN tunnel stopped: %w", err))
+	c.snapshotLocked()
 }

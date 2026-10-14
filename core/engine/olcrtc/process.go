@@ -98,14 +98,27 @@ func classifyLine(line, current string) string {
 
 func (c *Command) watch(stderr io.Reader) {
 	defer close(c.done)
-	scanner := bufio.NewScanner(stderr)
-	scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		c.note(line)
-		c.mu.Lock()
-		c.reason = classifyLine(line, c.reason)
-		c.mu.Unlock()
+	reader := bufio.NewReaderSize(stderr, 64*1024)
+	var line strings.Builder
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		remaining := 64*1024 - line.Len()
+		if remaining > 0 {
+			line.Write(fragment[:min(len(fragment), remaining)])
+		}
+		if err != bufio.ErrBufferFull {
+			if line.Len() > 0 {
+				value := strings.TrimSuffix(line.String(), "\n")
+				c.note(value)
+				c.mu.Lock()
+				c.reason = classifyLine(value, c.reason)
+				c.mu.Unlock()
+			}
+			line.Reset()
+		}
+		if err != nil && err != bufio.ErrBufferFull {
+			break
+		}
 	}
 	_ = c.cmd.Wait()
 }
@@ -161,6 +174,9 @@ func (c *Command) Stop() error {
 	}
 	return nil
 }
+
+// Done closes after stderr is drained and the child is reaped.
+func (c *Command) Done() <-chan struct{} { return c.done }
 
 // ExitReason is other until exit markers are confirmed against the pinned binary.
 func (c *Command) ExitReason() string {

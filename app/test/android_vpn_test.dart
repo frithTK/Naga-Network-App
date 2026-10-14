@@ -9,6 +9,8 @@ void main() {
 
   test('host flutter tests are not Android', () {
     expect(nagaRunsOnAndroid, isFalse);
+    expect(nagaRunsOnIOS, isFalse);
+    expect(nagaNeedsSystemTunnel, isFalse);
     expect(Platform.isAndroid, isFalse);
   });
 

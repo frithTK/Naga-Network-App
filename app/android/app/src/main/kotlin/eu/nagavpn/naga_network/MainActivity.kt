@@ -2,15 +2,16 @@ package eu.nagavpn.naga_network
 
 import android.Manifest
 import android.app.PendingIntent
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.Bundle
+import android.os.ResultReceiver
 import android.provider.Settings
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -23,11 +24,6 @@ class MainActivity : FlutterActivity() {
     private val updateChannel = "eu.nagavpn.naga_network/update"
     private val vpnChannel = "eu.nagavpn.naga_network/vpn"
     private var vpnPrepareResult: MethodChannel.Result? = null
-    private val installReceiver =
-        object : BroadcastReceiver() {
-            override fun onReceive(context: Context, intent: Intent) {}
-        }
-
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         startControlPlane(application)
@@ -40,6 +36,14 @@ class MainActivity : FlutterActivity() {
                             result.error("path", "apkPath is required", null)
                         } else {
                             installApk(path, result)
+                        }
+                    }
+                    "installStatus" -> {
+                        val prefs = getSharedPreferences(InstallStatusReceiver.PREFS, MODE_PRIVATE)
+                        val status = prefs.getString("status", "idle")
+                        result.success(mapOf("status" to status, "message" to prefs.getString("message", "")))
+                        if (status == "installed" || status == "failed") {
+                            prefs.edit().putString("status", "idle").putString("message", "").apply()
                         }
                     }
                     "dataDir" -> result.success(filesDir.absolutePath)
@@ -56,8 +60,8 @@ class MainActivity : FlutterActivity() {
                             call.argument<String>("engine") ?: NagaVpnService.ENGINE_SINGBOX,
                             call.argument<String>("routing") ?: "all_vpn",
                             call.argument<List<String>>("packages") ?: emptyList(),
+                            result,
                         )
-                        result.success(true)
                     }
                     "stop" -> {
                         stopService(Intent(this, NagaVpnService::class.java).setAction(NagaVpnService.ACTION_DISCONNECT))
@@ -67,22 +71,6 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
-    }
-
-    override fun onStart() {
-        super.onStart()
-        val filter = IntentFilter(ACTION_INSTALL_COMPLETE)
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(installReceiver, filter, RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(installReceiver, filter)
-        }
-    }
-
-    override fun onStop() {
-        runCatching { unregisterReceiver(installReceiver) }
-        super.onStop()
     }
 
     @Deprecated("Deprecated in Java")
@@ -120,13 +108,37 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    private fun startVpn(engine: String, routing: String, packages: List<String>) {
+    private fun startVpn(engine: String, routing: String, packages: List<String>, result: MethodChannel.Result) {
+        val handler = Handler(Looper.getMainLooper())
+        var completed = false
+        val timeout = Runnable {
+            if (!completed) {
+                completed = true
+                stopService(Intent(this, NagaVpnService::class.java))
+                result.error("vpn_start", "VPN-интерфейс не был создан вовремя.", null)
+            }
+        }
+        val receiver = object : ResultReceiver(handler) {
+            override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
+                if (completed) return
+                completed = true
+                handler.removeCallbacks(timeout)
+                result.success(resultCode == NagaVpnService.RESULT_READY)
+            }
+        }
         val intent =
             Intent(this, NagaVpnService::class.java)
                 .putExtra(NagaVpnService.EXTRA_ENGINE, engine)
                 .putExtra(NagaVpnService.EXTRA_ROUTING, routing)
                 .putStringArrayListExtra(NagaVpnService.EXTRA_PACKAGES, ArrayList(packages))
-        ContextCompat.startForegroundService(this, intent)
+                .putExtra(NagaVpnService.EXTRA_READY_RECEIVER, receiver)
+        try {
+            ContextCompat.startForegroundService(this, intent)
+            handler.postDelayed(timeout, 10000)
+        } catch (error: Exception) {
+            completed = true
+            result.error("vpn_start", error.message ?: "Не удалось запустить VPN-сервис.", null)
+        }
     }
 
     private fun listPackages(): List<Map<String, String>> {
@@ -176,34 +188,55 @@ class MainActivity : FlutterActivity() {
             result.error("file", "APK не найден.", null)
             return
         }
+        var sessionId: Int? = null
         try {
+            val info = if (Build.VERSION.SDK_INT >= 33) {
+                packageManager.getPackageArchiveInfo(path, PackageManager.PackageInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageArchiveInfo(path, 0)
+            }
+            if (info?.packageName != packageName) {
+                result.error("package", "APK не является обновлением Naga Network.", null)
+                return
+            }
             val installer = packageManager.packageInstaller
             val params =
                 android.content.pm.PackageInstaller.SessionParams(
                     android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL,
                 )
-            val sessionId = installer.createSession(params)
-            installer.openSession(sessionId).use { session ->
+            val id = installer.createSession(params)
+            sessionId = id
+            val nonce = java.util.UUID.randomUUID().toString()
+            val prefs = getSharedPreferences(InstallStatusReceiver.PREFS, MODE_PRIVATE)
+            if (!prefs.edit().putInt("session", id).putString("nonce", nonce).putString("status", "submitted").putString("message", "").commit()) {
+                throw IllegalStateException("Не удалось сохранить состояние установки.")
+            }
+            installer.openSession(id).use { session ->
                 session.openWrite("naga", 0, apk.length()).use { out ->
                     apk.inputStream().use { input -> input.copyTo(out) }
                     session.fsync(out)
                 }
-                val status = Intent(ACTION_INSTALL_COMPLETE).setPackage(packageName)
+                val status = Intent(this, InstallStatusReceiver::class.java)
+                    .setAction(InstallStatusReceiver.ACTION)
+                    .putExtra("nonce", nonce)
                 var flags = PendingIntent.FLAG_UPDATE_CURRENT
                 if (Build.VERSION.SDK_INT >= 31) {
                     flags = flags or PendingIntent.FLAG_MUTABLE
                 }
-                val pending = PendingIntent.getBroadcast(this, sessionId, status, flags)
+                val pending = PendingIntent.getBroadcast(this, id, status, flags)
                 session.commit(pending.intentSender)
             }
             result.success(null)
         } catch (error: Exception) {
+            sessionId?.let { runCatching { packageManager.packageInstaller.abandonSession(it) } }
+            getSharedPreferences(InstallStatusReceiver.PREFS, MODE_PRIVATE).edit()
+                .putString("status", "failed").putString("message", error.message ?: "PackageInstaller failed").apply()
             result.error("install", error.message ?: "PackageInstaller failed", null)
         }
     }
 
     companion object {
-        private const val ACTION_INSTALL_COMPLETE = "eu.nagavpn.naga_network.INSTALL_COMPLETE"
         private const val VPN_PREPARE = 9911
         private const val NOTIFICATION_REQUEST = 9912
     }

@@ -29,7 +29,8 @@ var (
 // Classify reports whether raw bytes are sing-box JSON or AmneziaWG INI.
 // Plain WireGuard without obfuscation fields is rejected explicitly.
 func Classify(raw []byte) (Format, error) {
-	trimmed := bytes.TrimSpace(raw)
+	raw = bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(raw), []byte{0xEF, 0xBB, 0xBF}))
+	trimmed := raw
 	if len(trimmed) == 0 {
 		return FormatUnknown, ErrEmptyConfig
 	}

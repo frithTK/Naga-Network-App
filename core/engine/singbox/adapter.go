@@ -927,12 +927,13 @@ func prepareRuntimeConfig(config []byte) ([]byte, *runtimeAPI, error) {
 		return nil, nil, fmt.Errorf("encode runtime config: %w", err)
 	}
 	options, _ := profile.InspectMode(result)
-	metadata, _ := profile.InspectOutboundMetadata(result)
-	selectionPaths := make(map[string][]profile.SelectorChoice)
-	for tag := range metadata {
-		if path, err := profile.SelectionPath(result, tag); err == nil && len(path) > 0 {
-			selectionPaths[tag] = path
-		}
+	metadata, metadataErr := profile.InspectOutboundMetadata(result)
+	if metadataErr != nil {
+		return nil, nil, metadataErr
+	}
+	selectionPaths, pathErr := profile.SelectionPaths(result)
+	if errors.Is(pathErr, profile.ErrProfileTooComplex) {
+		return nil, nil, pathErr
 	}
 	return result, &runtimeAPI{
 		baseURL: "http://" + address,

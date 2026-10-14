@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -54,15 +55,21 @@ func run(waitPID int, zipPath, dest, launch string) error {
 func waitForPID(pid int, timeout time.Duration) error {
 	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
 	if err != nil {
-		return nil
+		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			return nil // The process has already exited.
+		}
+		return fmt.Errorf("открыть процесс %d для ожидания: %w", pid, err)
 	}
 	defer windows.CloseHandle(handle)
 	event, err := windows.WaitForSingleObject(handle, uint32(timeout.Milliseconds()))
 	if err != nil {
 		return fmt.Errorf("ожидание процесса %d: %w", pid, err)
 	}
-	if event == windows.WAIT_TIMEOUT {
+	if event == uint32(windows.WAIT_TIMEOUT) {
 		return fmt.Errorf("процесс %d не завершился вовремя", pid)
+	}
+	if event != windows.WAIT_OBJECT_0 {
+		return fmt.Errorf("неожиданный результат ожидания процесса %d: %d", pid, event)
 	}
 	return nil
 }

@@ -259,7 +259,6 @@ func (p *hostProcess) sendStart(req processRequest) error {
 	payload := tunHostRequest{
 		ConfigPath: req.ConfigPath,
 		BinaryPath: req.Binary,
-		LogPath:    req.LogPath,
 		Env:        req.Env,
 	}
 	if err := json.NewEncoder(p.conn).Encode(payload); err != nil {
@@ -439,8 +438,8 @@ func RunTunHost(pipeName string) error {
 	}
 	defer conn.Close()
 
-	var req tunHostRequest
-	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+	req, err := decodeTunHostRequest(conn)
+	if err != nil {
 		return err
 	}
 	if err := runHostSingBox(conn, req); err != nil {
@@ -489,15 +488,6 @@ func runHostSingBox(conn *os.File, req tunHostRequest) error {
 	stderr := newTailBuffer(maxFailureOutputBytes)
 	command.Stdout = io.Discard
 	command.Stderr = stderr
-	if req.LogPath != "" {
-		logFile, err := os.OpenFile(req.LogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err != nil {
-			return fmt.Errorf("open sing-box log: %w", err)
-		}
-		defer logFile.Close()
-		command.Stdout = logFile
-		command.Stderr = io.MultiWriter(stderr, logFile)
-	}
 	clearStaleWintunAdapter("naga-tun0")
 	if err := command.Start(); err != nil {
 		return err

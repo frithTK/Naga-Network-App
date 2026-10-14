@@ -139,7 +139,7 @@ func TestPreviewReturnsSafeMetadata(t *testing.T) {
 			t.Fatalf("response leaked %q: %s", forbidden, body)
 		}
 	}
-	for _, expected := range []string{"Naga RF", "NagaVPN", "sing-box", "\"can_connect\":true", "\"update_interval_seconds\":1036800"} {
+	for _, expected := range []string{"Naga RF", "NagaVPN", "sing-box", "\"can_connect\":true", "\"update_interval_seconds\":43200"} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("response missing %q: %s", expected, body)
 		}
@@ -442,7 +442,7 @@ func TestImportSuppliedConfigKeepsSourceURLWithoutFetch(t *testing.T) {
 	if saved.SourceURL != source || saved.ID != profile.IDFromSourceURL(source) {
 		t.Fatalf("source = %#v", saved)
 	}
-	if saved.Name != "Naga Network" || saved.ProviderName != "Naga" || saved.UpdateInterval != 48*time.Hour {
+	if saved.Name != "Naga Network" || saved.ProviderName != "Naga" || saved.UpdateInterval != 2*time.Hour {
 		t.Fatalf("metadata = %#v", saved)
 	}
 	if saved.Subscription.Upload != 1 || saved.Subscription.Download != 2 {

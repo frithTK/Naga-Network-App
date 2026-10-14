@@ -4,6 +4,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -39,12 +40,12 @@ func (m *GSettingsSystemProxy) Configure(host string, port int) (func() error, e
 		key    string
 		value  string
 	}{
-		{"org.gnome.system.proxy", "mode", "manual"},
+		{"org.gnome.system.proxy", "mode", "'manual'"},
 		{"org.gnome.system.proxy.http", "host", "''"},
 		{"org.gnome.system.proxy.http", "port", "0"},
 		{"org.gnome.system.proxy.https", "host", "''"},
 		{"org.gnome.system.proxy.https", "port", "0"},
-		{"org.gnome.system.proxy.socks", "host", host},
+		{"org.gnome.system.proxy.socks", "host", strconv.Quote(host)},
 		{"org.gnome.system.proxy.socks", "port", strconv.Itoa(port)},
 	}
 	previous := make([]string, len(keys))
@@ -55,55 +56,51 @@ func (m *GSettingsSystemProxy) Configure(host string, port int) (func() error, e
 		}
 		previous[index] = strings.TrimSpace(value)
 	}
-	if proxyPointsAt(previous, port) {
-		previous = []string{"'none'", "''", "uint32 0", "''", "uint32 0", "''", "uint32 0"}
-	}
+	applied := 0
 	restore := func() error {
+		// Restore the snapshot only while the settings we changed still belong
+		// to this session. A user's replacement must remain a coherent whole.
+		for _, item := range keys[:applied] {
+			current, err := run("get", item.schema, item.key)
+			if err != nil {
+				return fmt.Errorf("read desktop proxy before restore: %w", err)
+			}
+			if proxyValue(current) != proxyValue(item.value) {
+				return nil
+			}
+		}
 		var result error
-		for index, item := range keys {
+		for index, item := range keys[:applied] {
 			if _, err := run("set", item.schema, item.key, previous[index]); err != nil {
-				result = fmt.Errorf("restore desktop proxy settings: %w", err)
+				result = errors.Join(result, fmt.Errorf("restore desktop proxy settings: %w", err))
 			}
 		}
 		return result
 	}
-	for _, item := range keys {
-		value := item.value
-		if strings.HasSuffix(item.key, "port") {
-			value = "uint32 " + value
+	for index := range keys {
+		item := &keys[index]
+		if item.key == "port" {
+			item.value = "uint32 " + item.value
 		}
-		if _, err := run("set", item.schema, item.key, value); err != nil {
-			_ = restore()
-			return nil, fmt.Errorf("enable desktop proxy: %w", err)
+		if _, err := run("set", item.schema, item.key, item.value); err != nil {
+			return nil, errors.Join(fmt.Errorf("enable desktop proxy: %w", err), restore())
 		}
+		applied++
 	}
 	return restore, nil
 }
 
-// proxyPointsAt reports whether the saved desktop proxy already targets the
-// olcRTC SOCKS port. That state is a leftover from a crashed session, not the
-// user's own settings, so disconnect must turn the proxy off.
-func proxyPointsAt(previous []string, port int) bool {
-	if len(previous) < 7 {
-		return false
+// gsettings serializes strings with single or double quotes and ports with
+// a type annotation. Compare values rather than serialization spelling.
+func proxyValue(value string) string {
+	value = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(value), "uint32 "))
+	if unquoted, err := strconv.Unquote(value); err == nil {
+		return unquoted
 	}
-	portText := strconv.Itoa(port)
-	return strings.Contains(previous[2], portText) || strings.Contains(previous[4], portText) || strings.Contains(previous[6], portText)
-}
-
-// clearStuckOlcProxy turns off a desktop proxy left pointing at the olcRTC
-// SOCKS port by an earlier crash. Later olcRTC starts do not enable it.
-func clearStuckOlcProxy() {
-	run := runGSettings
-	mode, err := run("get", "org.gnome.system.proxy.socks", "port")
-	if err != nil || !strings.Contains(mode, "10808") {
-		return
+	if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+		return value[1 : len(value)-1]
 	}
-	_, _ = run("set", "org.gnome.system.proxy", "mode", "none")
-	for _, schema := range []string{"org.gnome.system.proxy.http", "org.gnome.system.proxy.https", "org.gnome.system.proxy.socks"} {
-		_, _ = run("set", schema, "host", "''")
-		_, _ = run("set", schema, "port", "uint32 0")
-	}
+	return value
 }
 
 func runGSettings(args ...string) (string, error) {

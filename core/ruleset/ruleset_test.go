@@ -134,14 +134,30 @@ func TestMaterializeCacheHitDoesNotFetch(t *testing.T) {
 func TestMaterializeColdMissDoesNotBlockConnect(t *testing.T) {
 	dir := t.TempDir()
 	block := make(chan struct{})
-	t.Cleanup(func() { close(block) })
+	rawURL := "https://example.invalid/ru.json"
+	t.Cleanup(func() {
+		close(block)
+		// The cold-timeout path deliberately warms the cache in the background.
+		// Finish that write before testing.TempDir removes its directory.
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := os.Stat(CachePath(dir, rawURL)); err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Error("late cache write did not complete")
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	})
 	fetcher := &stubFetcher{
 		body:  []byte(`{"version":1,"rules":[{"domain_suffix":[".late"]}]}`),
 		block: block,
 	}
 	resolver := NewResolver(dir, fetcher)
 	resolver.ColdWait = 40 * time.Millisecond
-	config := sampleConfig("source", "https://example.invalid/ru.json")
+	config := sampleConfig("source", rawURL)
 	started := time.Now()
 	out, _, err := resolver.Materialize(context.Background(), config)
 	if err != nil {

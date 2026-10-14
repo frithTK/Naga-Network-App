@@ -105,6 +105,7 @@ func parseINI(raw []byte) (iniDoc, error) {
 // Parse decodes an AmneziaWG INI config. Field values are never copied into
 // returned errors.
 func Parse(raw []byte) (Config, error) {
+	raw = bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(raw), []byte{0xEF, 0xBB, 0xBF}))
 	format, err := Classify(raw)
 	if err != nil {
 		return Config{}, err
@@ -149,16 +150,29 @@ func Parse(raw []byte) (Config, error) {
 			doc.iface.get("h4"),
 		},
 	}
-	cfg.MTU, _ = atoi(doc.iface.get("mtu"))
-	cfg.ListenPort, _ = atoi(doc.iface.get("listenport"))
-	cfg.Jc, _ = atoi(firstNonEmpty(doc.iface.get("jc"), doc.iface.get("junkpacketcount")))
-	cfg.Jmin, _ = atoi(firstNonEmpty(doc.iface.get("jmin"), doc.iface.get("junkpacketmin"), doc.iface.get("junkpacketminsize")))
-	cfg.Jmax, _ = atoi(firstNonEmpty(doc.iface.get("jmax"), doc.iface.get("junkpacketmax"), doc.iface.get("junkpacketmaxsize")))
-	cfg.S[0], _ = atoi(doc.iface.get("s1"))
-	cfg.S[1], _ = atoi(doc.iface.get("s2"))
-	cfg.S[2], _ = atoi(doc.iface.get("s3"))
-	cfg.S[3], _ = atoi(doc.iface.get("s4"))
-	cfg.ITime, _ = atoi(firstNonEmpty(doc.iface.get("itime"), doc.iface.get("initpackettimeout")))
+	fields := []struct {
+		keys []string
+		dest *int
+		max  uint64
+	}{
+		{[]string{"mtu"}, &cfg.MTU, 65535},
+		{[]string{"listenport"}, &cfg.ListenPort, 65535},
+		{[]string{"jc", "junkpacketcount"}, &cfg.Jc, 128},
+		{[]string{"jmin", "junkpacketmin", "junkpacketminsize"}, &cfg.Jmin, 65507},
+		{[]string{"jmax", "junkpacketmax", "junkpacketmaxsize"}, &cfg.Jmax, 65507},
+		{[]string{"s1"}, &cfg.S[0], 65535},
+		{[]string{"s2"}, &cfg.S[1], 65535},
+		{[]string{"s3"}, &cfg.S[2], 65535},
+		{[]string{"s4"}, &cfg.S[3], 65535},
+		{[]string{"itime", "initpackettimeout"}, &cfg.ITime, 1<<32 - 1},
+	}
+	for _, field := range fields {
+		value, err := numericField(doc.iface, field.keys, field.max)
+		if err != nil {
+			return Config{}, err
+		}
+		*field.dest = value
+	}
 	for _, peerSec := range doc.peers {
 		peer := Peer{
 			PublicKey:    peerSec.get("publickey"),
@@ -166,7 +180,11 @@ func Parse(raw []byte) (Config, error) {
 			Endpoint:     peerSec.get("endpoint"),
 			AllowedIPs:   splitList(peerSec.get("allowedips")),
 		}
-		peer.PersistentKeepalive, _ = atoi(peerSec.get("persistentkeepalive"))
+		keepalive, err := numericField(peerSec, []string{"persistentkeepalive"}, 65535)
+		if err != nil {
+			return Config{}, err
+		}
+		peer.PersistentKeepalive = keepalive
 		cfg.Peers = append(cfg.Peers, peer)
 	}
 	if err := Validate(cfg); err != nil {
@@ -182,11 +200,21 @@ func Validate(cfg Config) error {
 	if len(cfg.Addresses) == 0 {
 		return ErrAddressMissing
 	}
-	if cfg.Jmin > 0 && cfg.Jmax > 0 && cfg.Jmin > cfg.Jmax {
+	if cfg.Jmin > cfg.Jmax {
 		return errors.New("amneziawg jmin is greater than jmax")
 	}
 	if cfg.Jc < 0 || cfg.Jc > 128 {
 		return errors.New("amneziawg jc is out of range")
+	}
+	// The native transport prepends a 16-byte header and appends a 16-byte
+	// authentication tag in its fixed packet buffer. Keep the complete UDP
+	// payload within the IPv4 datagram limit, including obfuscation padding.
+	mtu := cfg.MTU
+	if mtu == 0 {
+		mtu = 1280
+	}
+	if mtu < 0 || cfg.S[3] < 0 || cfg.S[3]+mtu+32 > 65507 {
+		return errors.New("amneziawg mtu and s4 exceed the packet size limit")
 	}
 	seenH := map[string]struct{}{}
 	for _, header := range cfg.H {
@@ -230,12 +258,24 @@ func splitList(raw string) []string {
 	return out
 }
 
-func atoi(raw string) (int, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, nil
+func numericField(section *iniSection, keys []string, maximum uint64) (int, error) {
+	var result int
+	found := false
+	for _, key := range keys {
+		raw, present := section.values[key]
+		if !present {
+			continue
+		}
+		value, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || value < 0 || uint64(value) > maximum {
+			// strconv's error includes the supplied value; do not expose it.
+			return 0, fmt.Errorf("amneziawg %s must be an integer in range 0..%d", key, maximum)
+		}
+		if !found {
+			result, found = value, true
+		}
 	}
-	return strconv.Atoi(raw)
+	return result, nil
 }
 
 func firstNonEmpty(values ...string) string {

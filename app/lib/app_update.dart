@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -83,7 +84,13 @@ class Semver implements Comparable<Semver> {
   int get hashCode => Object.hash(major, minor, patch);
 }
 
-enum UpdateInstallKind { linuxAppImage, linuxDev, windowsPortable, windowsSetup, android }
+enum UpdateInstallKind {
+  linuxAppImage,
+  linuxDev,
+  windowsPortable,
+  windowsSetup,
+  android,
+}
 
 class ReleaseAsset {
   const ReleaseAsset({
@@ -121,7 +128,10 @@ class GithubRelease {
 
   String get version => Semver.tryParse(tagName)?.toString() ?? tagName;
 
-  factory GithubRelease.fromJson(Map<String, dynamic> json, {String etag = ''}) {
+  factory GithubRelease.fromJson(
+    Map<String, dynamic> json, {
+    String etag = '',
+  }) {
     final rawAssets = json['assets'];
     final assets = <ReleaseAsset>[];
     if (rawAssets is List) {
@@ -165,7 +175,6 @@ class UpdateCheckResult {
 }
 
 String linuxAppImageName(String ver) => 'NagaNetwork-$ver-x86_64.AppImage';
-String linuxControlName() => 'naga-control-linux-x86_64';
 String windowsZipName(String ver) => 'NagaNetwork-$ver-windows-x64.zip';
 String windowsSetupName(String ver) => 'NagaNetwork-$ver-windows-x64-setup.exe';
 String androidApkName(String ver) => 'NagaNetwork-$ver-arm64-v8a.apk';
@@ -173,9 +182,9 @@ String androidApkName(String ver) => 'NagaNetwork-$ver-arm64-v8a.apk';
 List<String> requiredAssetNames(UpdateInstallKind kind, String ver) {
   switch (kind) {
     case UpdateInstallKind.linuxAppImage:
-      return [linuxAppImageName(ver), linuxControlName()];
+      return [linuxAppImageName(ver)];
     case UpdateInstallKind.linuxDev:
-      return [linuxAppImageName(ver), linuxControlName()];
+      return [linuxAppImageName(ver)];
     case UpdateInstallKind.windowsPortable:
       return [windowsZipName(ver)];
     case UpdateInstallKind.windowsSetup:
@@ -228,6 +237,9 @@ UpdateInstallKind detectInstallKind({
 }
 
 Directory _systemTempDir() => Directory.systemTemp;
+
+Future<ProcessResult> _runUpdateProcess(String executable, List<String> args) =>
+    Process.run(executable, args);
 
 const autoAppUpdateInterval = Duration(hours: 12);
 
@@ -409,11 +421,13 @@ class AppUpdater {
     this.resolvedExecutable,
     this.pid,
     Directory Function()? tempDirectory,
+    Future<ProcessResult> Function(String, List<String>)? runProcess,
     this.now,
   }) : _client = client ?? http.Client(),
        _ownsClient = client == null,
        _channel = channel ?? const MethodChannel(updateChannelName),
        _tempDirectory = tempDirectory ?? _systemTempDir,
+       _runProcess = runProcess ?? _runUpdateProcess,
        kind = kind ?? detectInstallKind();
 
   final http.Client _client;
@@ -426,6 +440,7 @@ class AppUpdater {
   final String? resolvedExecutable;
   final int? pid;
   final Directory Function() _tempDirectory;
+  final Future<ProcessResult> Function(String, List<String>) _runProcess;
   final DateTime Function()? now;
 
   String? _etag;
@@ -528,7 +543,9 @@ class AppUpdater {
     }
     final names = requiredAssetNames(kind, version);
     if (names.isEmpty) {
-      throw const AppUpdateException('Для этой платформы нет файла обновления.');
+      throw const AppUpdateException(
+        'Для этой платформы нет файла обновления.',
+      );
     }
     final assets = <ReleaseAsset>[];
     for (final name in names) {
@@ -538,38 +555,48 @@ class AppUpdater {
           'В релизе нет файла $name. UI без runtime не обновляем.',
         );
       }
+      if (p.basename(asset.name) != asset.name || asset.name.contains('\\')) {
+        throw const AppUpdateException('Недопустимое имя файла обновления.');
+      }
       assets.add(asset);
     }
-    final dir = Directory(
-      p.join(
-        _tempDirectory().path,
-        'naga-update-${now?.call().millisecondsSinceEpoch ?? DateTime.now().millisecondsSinceEpoch}',
-      ),
-    );
-    await dir.create(recursive: true);
+    Directory? dir;
     final files = <File>[];
     var receivedAll = 0;
     final totalAll = assets.fold<int>(0, (sum, asset) => sum + asset.size);
-    for (final asset in assets) {
-      final file = File(p.join(dir.path, asset.name));
-      await _downloadAsset(
-        asset,
-        file,
-        onProgress: (received, _) {
-          onProgress?.call(receivedAll + received, totalAll);
-        },
+    try {
+      dir = await _tempDirectory().createTemp('naga-update-');
+      for (final asset in assets) {
+        final file = File(p.join(dir.path, asset.name));
+        await _downloadAsset(
+          asset,
+          file,
+          onProgress: (received, _) {
+            onProgress?.call(receivedAll + received, totalAll);
+          },
+        );
+        receivedAll += asset.size > 0 ? asset.size : await file.length();
+        files.add(file);
+      }
+      return files;
+    } catch (error) {
+      // Preserve the integrity error even if removing staging also fails.
+      if (dir != null) {
+        await dir.delete(recursive: true).onError((error, stack) => dir!);
+      }
+      if (error is AppUpdateException) rethrow;
+      throw const AppUpdateException(
+        'Не удалось загрузить обновление. Проверьте соединение и свободное место.',
       );
-      receivedAll += asset.size > 0 ? asset.size : await file.length();
-      files.add(file);
     }
-    return files;
   }
 
   Future<void> applyDownloaded(
     List<File> files, {
     required String version,
     required Future<bool> Function() disconnectIfNeeded,
-    required Future<bool> Function(String expectedVersion) waitForControlVersion,
+    required Future<bool> Function(String expectedVersion)
+    waitForControlVersion,
   }) async {
     if (kind == UpdateInstallKind.linuxDev) {
       throw const AppUpdateException(
@@ -601,15 +628,13 @@ class AppUpdater {
     Future<bool> Function(String expectedVersion) waitForControlVersion,
   ) async {
     File? appImage;
-    File? control;
     for (final file in files) {
       final name = p.basename(file.path);
       if (name == linuxAppImageName(version)) appImage = file;
-      if (name == linuxControlName()) control = file;
     }
-    if (appImage == null || control == null) {
+    if (appImage == null) {
       throw const AppUpdateException(
-        'Не хватает AppImage или naga-control. UI без runtime не обновляем.',
+        'В загрузке нет AppImage со встроенным runtime.',
       );
     }
     final env = environment ?? Platform.environment;
@@ -623,54 +648,71 @@ class AppUpdater {
       File(currentImage).parent.path,
       linuxAppImageName(version),
     );
-    await appImage.copy(destImage);
-    await Process.run('chmod', ['+x', destImage]);
-    final home = (env['HOME'] ?? '').trim();
-    if (home.isEmpty) {
-      throw const AppUpdateException('Не удалось определить домашний каталог.');
-    }
-    final binDir = Directory(p.join(home, '.local', 'bin'));
-    await binDir.create(recursive: true);
-    final destControl = p.join(binDir.path, 'naga-control');
-    final staged = '$destControl.new';
-    await control.copy(staged);
-    await File(staged).rename(destControl);
-    await Process.run('chmod', ['+x', destControl]);
-    final user = (env['USER'] ?? env['LOGNAME'] ?? '').trim();
-    if (user.isEmpty) {
-      throw const AppUpdateException('Не удалось определить имя пользователя.');
-    }
-    final unit = 'naga-network-control@$user.service';
+    Directory? staging;
+    final destination = File(destImage);
+    File? backup;
+    var installed = false;
     try {
-      await _channel.invokeMethod<void>('restartSystemd', {'unit': unit});
-    } on MissingPluginException {
-      final result = await Process.run('pkexec', ['systemctl', 'restart', unit]);
-      if (result.exitCode != 0) {
-        throw AppUpdateException(
-          'Нужны права администратора. Выполните:\n'
-          'pkexec systemctl restart $unit',
+      staging = await Directory(File(currentImage).parent.path)
+          .createTemp('.naga-update-');
+      final type = await FileSystemEntity.type(destImage, followLinks: false);
+      if (type != FileSystemEntityType.notFound &&
+          type != FileSystemEntityType.file) {
+        throw const AppUpdateException(
+          'Путь нового AppImage занят другим объектом.',
         );
       }
-    } on PlatformException {
-      throw AppUpdateException(
-        'Нужны права администратора. Выполните:\n'
-        'pkexec systemctl restart $unit',
+      if (type == FileSystemEntityType.file) {
+        backup = await destination.copy(p.join(staging.path, 'previous'));
+      }
+      final staged = await appImage.copy(p.join(staging.path, 'AppImage'));
+      final chmod = await _runProcess('chmod', ['+x', staged.path]);
+      if (chmod.exitCode != 0) {
+        throw const AppUpdateException(
+          'Не удалось подготовить AppImage к запуску.',
+        );
+      }
+      await staged.rename(destImage);
+      installed = true;
+      // The downloaded image supplies its own runtime and installer. No second
+      // GitHub asset or binary from the currently mounted image is used.
+      final result = await _runProcess(destImage, ['--prepare-runtime']);
+      if (result.exitCode != 0) {
+        throw const AppUpdateException(
+          'Не удалось установить встроенный runtime. Подтвердите разрешение системы и повторите обновление.',
+        );
+      }
+      if (!await waitForControlVersion(version)) {
+        throw AppUpdateException(
+          'Встроенный runtime не запустился с версией $version.',
+        );
+      }
+    } catch (error) {
+      if (installed) {
+        if (backup != null) {
+          await backup.rename(destImage);
+        } else if (await destination.exists()) {
+          await destination.delete();
+        }
+      }
+      if (error is AppUpdateException) rethrow;
+      throw const AppUpdateException(
+        'Не удалось установить обновление AppImage.',
       );
-    }
-    if (!await waitForControlVersion(version)) {
-      throw AppUpdateException(
-        'naga-control не поднялся с версией $version. Выполните:\n'
-        'pkexec systemctl restart $unit',
-      );
+    } finally {
+      if (staging != null) {
+        await staging
+            .delete(recursive: true)
+            .onError((error, stack) => staging!);
+      }
     }
     try {
       await _channel.invokeMethod<void>('launchAndQuit', {'path': destImage});
     } on MissingPluginException {
-      await Process.start(
-        destImage,
-        const [],
-        mode: ProcessStartMode.detached,
-      );
+      await Process.start(destImage, [
+        '--wait-for-pid',
+        '${pid ?? pidFromIo()}',
+      ], mode: ProcessStartMode.detached);
       exit(0);
     }
   }
@@ -721,6 +763,24 @@ class AppUpdater {
     }
   }
 
+  Future<String?> androidInstallError() async {
+    if (kind != UpdateInstallKind.android) return null;
+    try {
+      final status = await _channel.invokeMapMethod<String, dynamic>(
+        'installStatus',
+      );
+      if (status?['status'] == 'failed') {
+        return status?['message'] as String? ??
+            'Не удалось установить обновление.';
+      }
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+    return null;
+  }
+
   Future<void> _applyAndroid(List<File> files) async {
     final apk = files.firstWhere(
       (file) => p.basename(file.path).toLowerCase().endsWith('.apk'),
@@ -729,9 +789,7 @@ class AppUpdater {
     try {
       await _channel.invokeMethod<void>('applyAndroid', {'apkPath': apk.path});
     } on MissingPluginException {
-      throw const AppUpdateException(
-        'Установка APK недоступна в этой сборке.',
-      );
+      throw const AppUpdateException('Установка APK недоступна в этой сборке.');
     } on PlatformException catch (error) {
       throw AppUpdateException(
         error.message ?? 'Не удалось запустить установку APK.',
@@ -744,14 +802,32 @@ class AppUpdater {
     File dest, {
     void Function(int received, int total)? onProgress,
   }) async {
-    final request = http.Request('GET', Uri.parse(asset.url));
+    const maxAssetBytes = 512 * 1024 * 1024;
+    final uri = Uri.tryParse(asset.url);
+    final expected = parseSha256Digest(asset.digest);
+    if (uri == null ||
+        uri.scheme != 'https' ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        asset.size <= 0 ||
+        asset.size > maxAssetBytes ||
+        expected == null) {
+      throw const AppUpdateException(
+        'У файла обновления нет корректного размера, HTTPS-ссылки или SHA-256.',
+      );
+    }
+    final request = http.Request('GET', uri);
     request.headers['User-Agent'] = userAgent;
     request.headers['Accept'] = 'application/octet-stream';
     late http.StreamedResponse response;
     try {
-      response = await _client.send(request);
+      response = await _client
+          .send(request)
+          .timeout(const Duration(seconds: 30));
     } on SocketException {
       throw const AppUpdateException('Нет сети. Проверьте соединение.');
+    } on TimeoutException {
+      throw const AppUpdateException('Сервер обновлений не ответил вовремя.');
     }
     if (response.statusCode == 403 || response.statusCode == 429) {
       throw const AppUpdateException(
@@ -761,13 +837,28 @@ class AppUpdater {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw AppUpdateException('Не удалось скачать ${asset.name}.');
     }
+    if (response.contentLength != null &&
+        response.contentLength != asset.size) {
+      throw const AppUpdateException(
+        'Размер файла обновления не совпадает с данными релиза.',
+      );
+    }
     final sink = dest.openWrite();
     var received = 0;
     final total = response.contentLength ?? asset.size;
     final digest = AccumulatorSink<Digest>();
     final hashSink = sha256.startChunkedConversion(digest);
     try {
-      await for (final chunk in response.stream) {
+      final deadline = DateTime.now().add(const Duration(minutes: 10));
+      await for (final chunk in response.stream.timeout(
+        const Duration(seconds: 30),
+      )) {
+        if (chunk.length > asset.size - received ||
+            DateTime.now().isAfter(deadline)) {
+          throw const AppUpdateException(
+            'Загрузка превысила размер файла или время ожидания.',
+          );
+        }
         sink.add(chunk);
         hashSink.add(chunk);
         received += chunk.length;
@@ -778,10 +869,17 @@ class AppUpdater {
     } catch (error) {
       await sink.close();
       hashSink.close();
+      if (error is TimeoutException) {
+        throw const AppUpdateException(
+          'Загрузка обновления остановилась. Повторите попытку.',
+        );
+      }
       rethrow;
     }
-    final expected = parseSha256Digest(asset.digest);
-    if (expected != null) {
+    if (received != asset.size) {
+      throw const AppUpdateException('Файл обновления загружен не полностью.');
+    }
+    {
       final actual = digest.events.single.toString();
       if (actual != expected) {
         await dest.delete();

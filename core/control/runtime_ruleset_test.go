@@ -209,6 +209,9 @@ func TestStartRetriesWithoutLocalRuleSets(t *testing.T) {
 	if starts != 2 {
 		t.Fatalf("starts = %d, want retry", starts)
 	}
+	if !strings.Contains(string(adapter.lastConfig()), "https://example.invalid/ru.json") || strings.Contains(string(adapter.lastConfig()), "naga-ruleset-retry") {
+		t.Fatal("retry changed provider definitions")
+	}
 	if _, err := controller.Stop(); err != nil {
 		t.Fatal(err)
 	}

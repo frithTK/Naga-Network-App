@@ -1,0 +1,19 @@
+# Полный клиент с PacketTunnel. Нужен оплаченный Apple Developer Program.
+# Скопируй поверх xtool.yml, когда ADP станет Active:
+#   cp ios/xtool.vpn.yml ios/xtool.yml
+version: 1
+bundleID: eu.nagavpn.naga_network
+product: NagaNetwork
+infoPath: Info.plist
+entitlementsPath: NagaNetwork.entitlements
+iconPath: Resources/AppIcon.png
+resources:
+  - PrivacyInfo.xcprivacy
+  - Resources/Fonts
+  - Resources/Mascot
+  - Resources/Brand
+extensions:
+  - product: PacketTunnel
+    bundleID: eu.nagavpn.naga_network.PacketTunnel
+    infoPath: PacketTunnel-Info.plist
+    entitlementsPath: PacketTunnel.entitlements

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Keep nested engine modules on the same patched compiler as naga-control.
+export GOTOOLCHAIN=go1.27.2
+
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 app_dir="${project_dir}/app"
 dist_dir="${project_dir}/dist"
@@ -42,7 +45,7 @@ if [[ -z "${version}" ]]; then
 fi
 
 if ! command -v go >/dev/null 2>&1; then
-  echo "Go не найден. Релиз кладёт AppImage и naga-control-linux-x86_64 вместе." >&2
+  echo "Go не найден. AppImage содержит встроенный naga-control." >&2
   exit 1
 fi
 
@@ -65,13 +68,27 @@ cp -a "${bundle}/." "${appdir}/"
 cp "${desktop_src}" "${appdir}/naga-network.desktop"
 cp "${icon_src}" "${appdir}/naga-mark-red.png"
 
-cat >"${appdir}/AppRun" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-HERE="$(dirname "$(readlink -f "$0")")"
-export LD_LIBRARY_PATH="${HERE}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "${HERE}/naga_network" "$@"
-EOF
+runtime_dir="${appdir}/runtime"
+mkdir -p "${runtime_dir}"
+echo "Сборка встроенного naga-control (version ${version})..."
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false \
+  -ldflags "-s -w -X naga.network/core/version.Version=${version}" \
+  -o "${runtime_dir}/naga-control" "${project_dir}/cmd/naga-control"
+bash "${project_dir}/scripts/linux/build-runtime.sh" "${runtime_dir}"
+cp "${project_dir}/packaging/linux/AppRun" "${appdir}/AppRun"
+cp "${project_dir}/packaging/linux/runtime-lib.sh" "${runtime_dir}/"
+cp "${project_dir}/packaging/linux/install-system.sh" "${runtime_dir}/"
+cp "${project_dir}/platform/linux/systemd/naga-network-control@.service" "${runtime_dir}/"
+cp "${project_dir}/platform/linux/polkit/49-naga-network-dns.rules.in" "${runtime_dir}/"
+cp "${project_dir}/platform/linux/udev/70-naga-network-tun.rules" "${runtime_dir}/"
+printf '%s\n' "${version}" >"${runtime_dir}/runtime.version"
+chmod 755 "${runtime_dir}/naga-control" "${runtime_dir}/install-system.sh"
+(
+  cd "${runtime_dir}"
+  find . -maxdepth 1 -type f ! -name runtime.sha256 ! -name runtime.build-id -print0 |
+    sort -z | xargs -0 sha256sum >runtime.sha256
+  sha256sum runtime.sha256 | cut -d' ' -f1 >runtime.build-id
+)
 chmod +x "${appdir}/AppRun" "${appdir}/naga_network"
 
 mkdir -p "${dist_dir}"
@@ -80,14 +97,6 @@ echo "Упаковка ${output}..."
 ARCH=x86_64 "${appimagetool}" "${appdir}" "${output}"
 chmod +x "${output}"
 
-control_output="${dist_dir}/naga-control-linux-x86_64"
-echo "Сборка ${control_output} (version ${version})..."
-CGO_ENABLED=0 go build -buildvcs=false \
-  -ldflags "-s -w -X naga.network/core/version.Version=${version}" \
-  -o "${control_output}" "${project_dir}/cmd/naga-control"
-chmod +x "${control_output}"
-
 echo "Готово:"
 echo "  ${output}"
-echo "  ${control_output}"
-echo "AppImage — только UI. Кнопка обновления ставит оба файла; systemd unit по-прежнему указывает на ~/.local/bin/naga-control."
+echo "AppImage содержит UI, naga-control, sing-box, olcRTC и hev. При первом запуске он подготовит системную службу."

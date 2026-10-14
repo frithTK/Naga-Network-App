@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Keep nested engine modules on the same patched compiler as naga-control.
+export GOTOOLCHAIN=go1.27.2
+
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 out_dir="${project_dir}/dist/windows/host"
 mkdir -p "${out_dir}"

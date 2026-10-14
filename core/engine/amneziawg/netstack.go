@@ -33,7 +33,13 @@ func NewNetstackSidecar() Sidecar {
 	return &netstackSidecar{}
 }
 
-func (s *netstackSidecar) Start(_ context.Context, cfg awgcfg.Config) error {
+func (s *netstackSidecar) Start(ctx context.Context, cfg awgcfg.Config) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := awgcfg.Validate(cfg); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.dev != nil {

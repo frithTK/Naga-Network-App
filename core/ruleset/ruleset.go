@@ -8,10 +8,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,9 +33,10 @@ type Fetcher interface {
 }
 
 type RemoteSet struct {
-	Tag    string
-	URL    string
-	Format string
+	Tag            string
+	URL            string
+	Format         string
+	UpdateInterval time.Duration
 }
 
 type Stats struct {
@@ -44,6 +49,10 @@ type Resolver struct {
 	Dir      string
 	Fetcher  Fetcher
 	ColdWait time.Duration
+	Now      func() time.Time
+	mu       sync.Mutex
+	inflight map[string]*fetchResult
+	slots    chan struct{}
 }
 
 func NewResolver(dir string, fetcher Fetcher) *Resolver {
@@ -53,6 +62,15 @@ func NewResolver(dir string, fetcher Fetcher) *Resolver {
 func CachePath(dir, rawURL string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(rawURL)))
 	return filepath.Join(dir, hex.EncodeToString(sum[:]))
+}
+
+// CachePathForFormat prevents a binary declaration from replacing the source
+// file another live configuration is watching at the same URL.
+func CachePathForFormat(dir, rawURL, format string) string {
+	if format == "binary" {
+		return CachePath(dir, strings.TrimSpace(rawURL)+"\x00binary")
+	}
+	return CachePath(dir, rawURL)
 }
 
 func ListRemote(config []byte) ([]RemoteSet, error) {
@@ -65,6 +83,9 @@ func ListRemote(config []byte) ([]RemoteSet, error) {
 		return nil, nil
 	}
 	rawSets, _ := route["rule_set"].([]any)
+	if len(rawSets) > 2048 {
+		return nil, errors.New("too many remote rule sets")
+	}
 	out := make([]RemoteSet, 0, len(rawSets))
 	for _, raw := range rawSets {
 		item, ok := raw.(map[string]any)
@@ -80,10 +101,19 @@ func ListRemote(config []byte) ([]RemoteSet, error) {
 		if tag == "" || rawURL == "" {
 			continue
 		}
+		interval := 24 * time.Hour
+		if raw, ok := item["update_interval"].(string); ok && raw != "" {
+			var err error
+			interval, err = ruleSetInterval(raw)
+			if err != nil {
+				return nil, err
+			}
+		}
 		out = append(out, RemoteSet{
-			Tag:    tag,
-			URL:    rawURL,
-			Format: ruleSetFormat(item, rawURL),
+			Tag:            tag,
+			URL:            rawURL,
+			Format:         ruleSetFormat(item, rawURL),
+			UpdateInterval: interval,
 		})
 	}
 	return out, nil
@@ -172,33 +202,55 @@ func (r *Resolver) Materialize(ctx context.Context, config []byte) ([]byte, Stat
 	}
 
 	for _, remote := range remotes {
-		cache := CachePath(r.Dir, remote.URL)
-		if cached, ok := readCache(cache); ok && validPayload(cached, remote.Format) {
+		cache := CachePathForFormat(r.Dir, remote.URL, remote.Format)
+		if remote.Format == "binary" {
+			if _, err := os.Stat(cache); errors.Is(err, os.ErrNotExist) {
+				legacy := CachePath(r.Dir, remote.URL)
+				if body, ok := readCache(legacy); ok && validPayload(body, "binary") {
+					if info, err := os.Stat(legacy); err == nil {
+						if err = writeCache(cache, body); err == nil {
+							_ = os.Chtimes(cache, info.ModTime(), info.ModTime())
+						}
+					}
+				}
+			}
+		}
+		cached, cachedOK := readCache(cache)
+		cacheUsable := cachedOK && validPayload(cached, remote.Format)
+		if cacheUsable {
 			abs, err := filepath.Abs(cache)
 			if err != nil {
+				mu.Lock()
 				stats.Skipped++
+				mu.Unlock()
 				continue
 			}
+			mu.Lock()
 			paths[remote.Tag] = abs
 			stats.Cache++
-			continue
+			mu.Unlock()
+			if r.fresh(cache, remote.UpdateInterval) {
+				continue
+			}
 		}
 		misses++
 		if r.Fetcher == nil {
+			mu.Lock()
 			stats.Skipped++
+			mu.Unlock()
 			continue
 		}
 		wg.Add(1)
 		go func(remote RemoteSet, cache string) {
 			defer wg.Done()
-			body, err := r.Fetcher.FetchBytes(ctx, remote.URL)
+			body, err := r.fetch(ctx, remote, cache)
 			if err != nil || !validPayload(body, remote.Format) {
 				mu.Lock()
 				stats.Skipped++
 				mu.Unlock()
 				return
 			}
-			if err := writeCache(cache, body); err != nil {
+			if !validPayload(body, remote.Format) {
 				mu.Lock()
 				stats.Skipped++
 				mu.Unlock()
@@ -233,11 +285,132 @@ func (r *Resolver) Materialize(ctx context.Context, config []byte) ([]byte, Stat
 		}
 	}
 
-	out, err := ApplyLocal(config, paths)
-	if err != nil {
-		return config, stats, err
+	// Workers may still be warming the cache after ColdWait. Neither config
+	// transformation nor the returned stats may share their mutable result.
+	mu.Lock()
+	resolved := make(map[string]string, len(paths))
+	for tag, path := range paths {
+		resolved[tag] = path
 	}
-	return out, stats, nil
+	snapshot := stats
+	mu.Unlock()
+	out, err := ApplyLocal(config, resolved)
+	if err != nil {
+		return config, snapshot, err
+	}
+	return out, snapshot, nil
+}
+
+type fetchResult struct {
+	done chan struct{}
+	body []byte
+	err  error
+}
+
+func ruleSetInterval(raw string) (time.Duration, error) {
+	if strings.HasSuffix(raw, "d") {
+		days, err := strconv.ParseFloat(strings.TrimSuffix(raw, "d"), 64)
+		if err != nil || math.IsNaN(days) || math.IsInf(days, 0) || days <= 0 || days > 365 {
+			return 0, errors.New("invalid rule-set update interval")
+		}
+		return time.Duration(days * float64(24*time.Hour)), nil
+	}
+	duration, err := time.ParseDuration(raw)
+	if err != nil || duration <= 0 || duration > 365*24*time.Hour {
+		return 0, errors.New("invalid rule-set update interval")
+	}
+	return duration, nil
+}
+
+func (r *Resolver) fresh(path string, interval time.Duration) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	now := time.Now()
+	if r.Now != nil {
+		now = r.Now()
+	}
+	age := now.Sub(info.ModTime())
+	return age >= 0 && age < interval
+}
+
+func (r *Resolver) fetch(ctx context.Context, remote RemoteSet, cache string) ([]byte, error) {
+	// Formats sharing a URL must not overwrite one another's cached payload.
+	key := remote.URL + "\x00" + remote.Format
+	r.mu.Lock()
+	if r.inflight == nil {
+		r.inflight = make(map[string]*fetchResult)
+		r.slots = make(chan struct{}, 8)
+	}
+	if result := r.inflight[key]; result != nil {
+		r.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-result.done:
+			return result.body, result.err
+		}
+	}
+	result := &fetchResult{done: make(chan struct{})}
+	r.inflight[key] = result
+	slots := r.slots
+	r.mu.Unlock()
+	defer func() { r.mu.Lock(); delete(r.inflight, key); close(result.done); r.mu.Unlock() }()
+	select {
+	case slots <- struct{}{}:
+	case <-ctx.Done():
+		result.err = ctx.Err()
+		return nil, result.err
+	}
+	defer func() { <-slots }()
+	// Another request may have filled the cache while this one waited.
+	if body, ok := readCache(cache); ok && validPayload(body, remote.Format) && r.fresh(cache, remote.UpdateInterval) {
+		result.body = body
+		return body, nil
+	}
+	result.body, result.err = r.Fetcher.FetchBytes(ctx, remote.URL)
+	if result.err == nil && !validPayload(result.body, remote.Format) {
+		result.err = errors.New("invalid rule-set payload")
+	}
+	if result.err == nil {
+		result.err = ctx.Err()
+	}
+	if result.err == nil {
+		result.err = writeCache(cache, result.body)
+	}
+	return result.body, result.err
+}
+
+// Watch refreshes the original remote definitions while the runtime owns ctx.
+// sing-box watches local rule-set replacements; no reconnect is necessary.
+func (r *Resolver) Watch(ctx context.Context, config []byte) {
+	remotes, err := ListRemote(config)
+	if err != nil || len(remotes) == 0 {
+		return
+	}
+	interval := time.Minute
+	for _, remote := range remotes {
+		if remote.UpdateInterval < interval {
+			interval = remote.UpdateInterval
+		}
+	}
+	// Avoid polling storms from hostile provider intervals.
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		_, _, _ = r.Materialize(refreshCtx, config)
+		cancel()
+	}
 }
 
 func ruleSetFormat(item map[string]any, rawURL string) string {
@@ -255,18 +428,35 @@ func ruleSetFormat(item map[string]any, rawURL string) string {
 }
 
 func validPayload(body []byte, format string) bool {
-	if len(body) == 0 {
+	if len(body) == 0 || len(body) > 8<<20 {
 		return false
 	}
 	if format == "source" {
-		return json.Valid(body)
+		var document struct {
+			Version int               `json:"version"`
+			Rules   []json.RawMessage `json:"rules"`
+		}
+		if json.Unmarshal(body, &document) != nil || document.Version < 1 || document.Version > 5 || document.Rules == nil {
+			return false
+		}
+		for _, raw := range document.Rules {
+			if len(raw) == 0 || raw[0] != '{' {
+				return false
+			}
+		}
+		return true
 	}
 	return len(body) >= 4 && bytes.HasPrefix(body, []byte(srsMagic))
 }
 
 func readCache(path string) ([]byte, bool) {
-	body, err := os.ReadFile(path)
-	if err != nil || len(body) == 0 {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, (8<<20)+1))
+	if err != nil || len(body) == 0 || len(body) > 8<<20 {
 		return nil, false
 	}
 	return body, true
