@@ -7,6 +7,10 @@ on:
         description: Git tag or commit to build
         required: true
         default: v1.2.7
+      verify_windows:
+        description: Verify the published Windows installer as well
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -55,6 +59,10 @@ jobs:
         run: python3 -m unittest discover -s scripts/linux/tests -v
       - name: Build complete AppImage
         working-directory: source
+        env:
+          # Both constants are zero; the new name requires GLib 2.74,
+          # while Ubuntu 22.04 provides GLib 2.72.
+          CXXFLAGS: -DG_APPLICATION_DEFAULT_FLAGS=G_APPLICATION_FLAGS_NONE
         run: bash scripts/linux/build-appimage.sh
       - name: Verify bundle and installed service
         run: bash tooling/scripts/linux/verify-appimage.sh source/dist/NagaNetwork-*-x86_64.AppImage
@@ -70,7 +78,7 @@ jobs:
           if-no-files-found: error
 
   windows-install:
-    if: startsWith(inputs.source_ref, 'v')
+    if: inputs.verify_windows && startsWith(inputs.source_ref, 'v')
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
