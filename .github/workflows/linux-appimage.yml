@@ -1,0 +1,83 @@
+name: Linux AppImage
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git tag or commit to build
+        required: true
+        default: v1.2.7
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tooling
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: source
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+          cache-dependency-path: source/go.sum
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.1'
+          channel: stable
+          cache: true
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev \
+            libayatana-appindicator3-dev libfuse2 desktop-file-utils \
+            libglib2.0-bin gsettings-desktop-schemas python3 curl make gcc \
+            libcap2-bin policykit-1 udev
+      - name: Install verified appimagetool 1.9.1
+        run: |
+          mkdir -p "$RUNNER_TEMP/appimagetool" "$RUNNER_TEMP/naga-bin"
+          cd "$RUNNER_TEMP/appimagetool"
+          curl --fail --location --retry 3 -o appimagetool.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          echo 'ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool.AppImage' | sha256sum --check
+          chmod +x appimagetool.AppImage
+          ./appimagetool.AppImage --appimage-extract >/dev/null
+          ln -s "$PWD/squashfs-root/AppRun" "$RUNNER_TEMP/naga-bin/appimagetool"
+          echo "$RUNNER_TEMP/naga-bin" >> "$GITHUB_PATH"
+      - name: Check Linux packaging
+        working-directory: source
+        run: python3 -m unittest discover -s scripts/linux/tests -v
+      - name: Build complete AppImage
+        working-directory: source
+        run: bash scripts/linux/build-appimage.sh
+      - name: Verify bundle and installed service
+        run: bash tooling/scripts/linux/verify-appimage.sh source/dist/NagaNetwork-*-x86_64.AppImage
+      - name: Checksums
+        working-directory: source/dist
+        run: sha256sum NagaNetwork-*-x86_64.AppImage > SHA256SUMS-linux.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NagaNetwork-linux-x86_64
+          path: |
+            source/dist/NagaNetwork-*-x86_64.AppImage
+            source/dist/SHA256SUMS-linux.txt
+          if-no-files-found: error
+
+  windows-install:
+    if: startsWith(inputs.source_ref, 'v')
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify published Windows installer and helper
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.source_ref }}
+        run: ./scripts/windows/verify-release.ps1
