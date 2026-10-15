@@ -204,7 +204,12 @@ func (a jobBarrierAdapter) Start(context.Context, []byte) (engine.Runtime, error
 
 func awaitJob(t *testing.T, c *RuntimeController, id string, predicate func(ProbeJobSnapshot) bool) ProbeJobSnapshot {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
+	return awaitJobWithin(t, c, id, 2*time.Second, predicate)
+}
+
+func awaitJobWithin(t *testing.T, c *RuntimeController, id string, timeout time.Duration, predicate func(ProbeJobSnapshot) bool) ProbeJobSnapshot {
+	t.Helper()
+	deadline := time.After(timeout)
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -215,7 +220,8 @@ func awaitJob(t *testing.T, c *RuntimeController, id string, predicate func(Prob
 		select {
 		case <-ticker.C:
 		case <-deadline:
-			t.Fatalf("job did not reach expected state: %+v", snapshot)
+			t.Fatalf("job did not reach expected state: state=%s healthy=%d failed=%d skipped=%d nodes=%d cleanup=%t",
+				snapshot.State, snapshot.Healthy, snapshot.Failed, snapshot.Skipped, len(snapshot.Nodes), snapshot.CleanupComplete)
 		}
 	}
 }
@@ -629,7 +635,9 @@ func TestProbeJobControlledOutcomeMatrix(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					final := awaitJob(t, c, job.JobID, func(s ProbeJobSnapshot) bool { return s.CleanupComplete })
+					// Race instrumentation and full snapshots of 1000 nodes can take
+					// longer than the small barrier-based tests on shared CI runners.
+					final := awaitJobWithin(t, c, job.JobID, 10*time.Second, func(s ProbeJobSnapshot) bool { return s.CleanupComplete })
 					if final.State != "completed" || final.Total == nil || *final.Total != size || final.Healthy != size-runtime.failures || final.Failed != runtime.failures || len(final.Nodes) != size {
 						t.Fatalf("matrix outcome mismatch: state=%s total=%v healthy=%d failed=%d nodes=%d", final.State, final.Total, final.Healthy, final.Failed, len(final.Nodes))
 					}
