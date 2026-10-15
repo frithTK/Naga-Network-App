@@ -11,6 +11,10 @@ on:
         description: Verify the published Windows installer as well
         type: boolean
         default: true
+      build_windows:
+        description: Build and verify Windows setup and portable from source_ref
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -89,3 +93,43 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.source_ref }}
         run: ./scripts/windows/verify-release.ps1
+
+  windows-build:
+    if: inputs.build_windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tooling
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: source
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+          cache-dependency-path: source/go.sum
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.1'
+          channel: stable
+          cache: true
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+      - name: Build Windows setup and portable
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ./source/scripts/windows/build.ps1
+      - name: Verify new Windows installer
+        shell: pwsh
+        run: |
+          $version = (Select-String '^version:' source/app/pubspec.yaml).Line.Split(':')[1].Trim().Split('+')[0]
+          $env:RELEASE_TAG = "v$version"
+          ./tooling/scripts/windows/verify-release.ps1 -LocalArtifacts ./source/dist/windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NagaNetwork-windows-release
+          path: |
+            source/dist/windows/*-windows-x64-setup.exe
+            source/dist/windows/*-windows-x64.zip
+          if-no-files-found: error

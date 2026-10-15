@@ -27,7 +27,11 @@ if ! getent group naga-network >/dev/null; then groupadd --system naga-network; 
 install -Dm644 "${runtime_dir}/70-naga-network-tun.rules" /etc/udev/rules.d/70-naga-network-tun.rules
 udevadm control --reload-rules
 udevadm trigger --subsystem-match=misc --sysname-match=tun
-[[ "$(stat -c '%a' /dev/net/tun)" == "660" && "$(stat -c '%G' /dev/net/tun)" == "naga-network" ]]
+udevadm settle --timeout=15
+if [[ "$(stat -c '%a' /dev/net/tun)" != "660" || "$(stat -c '%G' /dev/net/tun)" != "naga-network" ]]; then
+  echo "Правило udev не применилось к /dev/net/tun: $(stat -c '%a %G' /dev/net/tun)" >&2
+  exit 1
+fi
 install -Dm644 "${work}/naga-network-control@.service" /etc/systemd/system/naga-network-control@.service
 install -Dm644 "${work}/polkit" /etc/polkit-1/rules.d/49-naga-network-dns.rules
 # Migrate only the old service owned by this user, after authorization.
