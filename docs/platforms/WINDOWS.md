@@ -21,6 +21,8 @@ Native TUN — через sing-box и Wintun. Установщик один ра
 3. Inno Setup 6 (`ISCC.exe`) для setup.exe.
 4. Опционально Authenticode: `NAGA_SIGN_PFX` или `NAGA_SIGN_SHA1`.
 
+Нужен рабочий Python 3 в PATH (`python --version`) для подготовки зависимостей sing-box. Заглушка Microsoft Store вместо Python не подходит.
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\windows\build.ps1
 ```
