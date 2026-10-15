@@ -6,7 +6,7 @@ on:
       source_ref:
         description: Git tag or commit to build
         required: true
-        default: v1.2.8
+        default: v1.2.9
       build_linux:
         description: Build and verify Linux AppImage from source_ref
         type: boolean

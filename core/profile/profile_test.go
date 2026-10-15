@@ -282,6 +282,109 @@ func TestApplyRoutingPolicyUsesWindowsProcessPath(t *testing.T) {
 	}
 }
 
+func TestApplyRoutingPolicyAddsMissingDirectWithoutChangingSubscription(t *testing.T) {
+	for _, mode := range []policy.RoutingMode{policy.RoutingAllVPN, policy.RoutingSelectedVPN, policy.RoutingSelectedDirect, policy.RoutingAllDirect} {
+		t.Run(string(mode), func(t *testing.T) {
+			// A provider is allowed to use our preferred direct tag for a proxy.
+			config := []byte(`{"route":{"final":"Mode"},"outbounds":[{"type":"selector","tag":"Mode","outbounds":["Naga-Direct"]},{"type":"vless","tag":"Naga-Direct"}]}`)
+			original := string(config)
+			routed, err := ApplyRoutingPolicy(config, policy.RoutingPolicy{
+				Mode: mode, BuiltinPrivate: true, BuiltinRU: true,
+				Apps: []policy.AppRoute{{ID: "browser", Platform: "windows", PackageOrProcessID: `C:\Browser\browser.exe`, Route: "vpn", Enabled: true}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(config) != original {
+				t.Fatal("routing rewrote the source subscription")
+			}
+			var document map[string]any
+			if err := json.Unmarshal(routed, &document); err != nil {
+				t.Fatal(err)
+			}
+			direct := directOutboundTag(document)
+			if direct != "Naga-Direct-1" {
+				t.Fatalf("direct leaf collided with a provider tag: %q", direct)
+			}
+			route := document["route"].(map[string]any)
+			wantFinal := "Mode"
+			if mode == policy.RoutingSelectedVPN || mode == policy.RoutingAllDirect {
+				wantFinal = direct
+			}
+			if route["final"] != wantFinal {
+				t.Fatalf("final = %v, want %s", route["final"], wantFinal)
+			}
+			directRules := 0
+			for _, raw := range route["rules"].([]any) {
+				if raw.(map[string]any)["outbound"] == direct {
+					directRules++
+				}
+			}
+			if directRules != 3 {
+				t.Fatalf("private/RU direct rules = %d, want 3", directRules)
+			}
+		})
+	}
+}
+
+func TestRuntimeTUNDNSPrecedesAppAndPrivateBypass(t *testing.T) {
+	config := []byte(`{"route":{"final":"proxy"},"outbounds":[{"type":"vless","tag":"proxy"}]}`)
+	traffic, err := ApplyTrafficMode(config, policy.TrafficTUN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routed, err := ApplyRoutingPolicy(traffic, policy.RoutingPolicy{
+		Mode: policy.RoutingSelectedVPN, BuiltinPrivate: true,
+		Apps: []policy.AppRoute{{ID: "browser", Platform: "windows", PackageOrProcessID: "browser.exe", Route: "vpn", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(routed, &document); err != nil {
+		t.Fatal(err)
+	}
+	rules := document["route"].(map[string]any)["rules"].([]any)
+	first := rules[0].(map[string]any)
+	if first["action"] != "hijack-dns" || first["port"] != float64(53) || first["inbound"].([]any)[0] != "tun-in" {
+		t.Fatalf("TUN DNS must precede application and private routes: %#v", rules)
+	}
+	if strings.Contains(string(config), "hijack-dns") {
+		t.Fatal("source subscription was changed")
+	}
+	dns := document["dns"].(map[string]any)
+	if dns["final"] != "naga-dns" || document["route"].(map[string]any)["default_domain_resolver"] != "naga-bootstrap" {
+		t.Fatalf("missing independent bootstrap resolver: %#v", dns)
+	}
+	if dns["servers"].([]any)[1].(map[string]any)["detour"] != "Naga-Direct" {
+		t.Fatal("DNS must honor the selected-app routing final")
+	}
+}
+
+func TestRuntimeTUNDNSPreservesProviderResolver(t *testing.T) {
+	config := []byte(`{"dns":{"servers":[{"type":"tcp","tag":"provider","server":"192.0.2.53"}],"final":"provider"},"inbounds":[{"type":"tun","tag":"provider-tun"}],"route":{"final":"proxy"},"outbounds":[{"type":"vless","tag":"proxy"}]}`)
+	routed, err := ApplyRoutingPolicy(config, policy.RoutingPolicy{Mode: policy.RoutingAllVPN, BuiltinPrivate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after map[string]any
+	if err := json.Unmarshal(config, &before); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(routed, &after); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := json.Marshal(before["dns"])
+	got, _ := json.Marshal(after["dns"])
+	if string(got) != string(want) {
+		t.Fatalf("provider DNS changed: got %s, want %s", got, want)
+	}
+	rules := after["route"].(map[string]any)["rules"].([]any)
+	if rules[0].(map[string]any)["action"] != "hijack-dns" {
+		t.Fatal("DNS must precede private-network bypass")
+	}
+}
+
 func TestApplyRoutingPolicyEmptySelectedVPNKeepsVPNFinal(t *testing.T) {
 	config := []byte(`{"route":{"final":"Mode"},"outbounds":[{"type":"selector","tag":"Mode","outbounds":["node"]},{"type":"vless","tag":"node"},{"type":"direct","tag":"direct"}]}`)
 	routed, err := ApplyRoutingPolicy(config, policy.RoutingPolicy{

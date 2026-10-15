@@ -820,12 +820,32 @@ func ApplyRoutingPolicy(config []byte, routing policy.RoutingPolicy) ([]byte, er
 	direct := directOutboundTag(document)
 	needsDirect := routing.Mode == policy.RoutingAllDirect ||
 		routing.Mode == policy.RoutingSelectedVPN ||
-		routing.Mode == policy.RoutingSelectedDirect
+		routing.Mode == policy.RoutingSelectedDirect ||
+		routing.BuiltinPrivate || routing.BuiltinRU
 	for _, app := range routing.Apps {
 		needsDirect = needsDirect || app.Enabled && app.Route == "direct"
 	}
 	if direct == "" && needsDirect {
-		return nil, errors.New("routing policy requires a direct outbound")
+		// Subscriptions may contain only proxy nodes. Local routing must not
+		// depend on the provider supplying a direct leaf; add it to this
+		// decoded runtime document without changing the stored subscription.
+		outbounds, ok := document["outbounds"].([]any)
+		if !ok {
+			return nil, errors.New("sing-box config must contain an outbounds array")
+		}
+		tags := make(map[string]bool, len(outbounds))
+		for _, raw := range outbounds {
+			if outbound, ok := raw.(map[string]any); ok {
+				if tag, ok := outbound["tag"].(string); ok {
+					tags[tag] = true
+				}
+			}
+		}
+		direct = UnifiedDirectTag
+		for suffix := 1; tags[direct]; suffix++ {
+			direct = fmt.Sprintf("%s-%d", UnifiedDirectTag, suffix)
+		}
+		document["outbounds"] = append(outbounds, map[string]any{"type": "direct", "tag": direct})
 	}
 
 	vpnFinal := final
@@ -876,12 +896,51 @@ func ApplyRoutingPolicy(config []byte, routing policy.RoutingPolicy) ([]byte, er
 	if len(appRules) > 0 || len(builtin) > 0 {
 		route["rules"] = append(append(appRules, builtin...), oldRules...)
 	}
+	ensureTUNDNSRouting(document, route, final)
 
 	result, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode routed config: %w", err)
 	}
 	return result, nil
+}
+
+// ensureTUNDNSRouting handles system DNS before application and private bypass
+// rules, including envelopes that omit both DNS and TUN configuration.
+func ensureTUNDNSRouting(document, route map[string]any, final string) {
+	var tunTags []any
+	inbounds, _ := document["inbounds"].([]any)
+	for _, raw := range inbounds {
+		if inbound, ok := raw.(map[string]any); ok && inbound["type"] == "tun" {
+			if tag, ok := inbound["tag"].(string); ok && tag != "" {
+				tunTags = append(tunTags, tag)
+			}
+		}
+	}
+	if len(tunTags) > 0 {
+		if _, hasDNS := document["dns"].(map[string]any); !hasDNS {
+			// Resolve proxy hostnames independently of the TUN's system DNS
+			// address, then send application DNS through the chosen route.
+			servers := []any{map[string]any{
+				"type": "udp", "tag": "naga-bootstrap", "server": "1.1.1.1",
+			}}
+			dnsFinal := "naga-bootstrap"
+			if final != "" {
+				servers = append(servers, map[string]any{
+					"type": "tcp", "tag": "naga-dns", "server": "1.1.1.1", "detour": final,
+				})
+				dnsFinal = "naga-dns"
+			}
+			document["dns"] = map[string]any{"servers": servers, "final": dnsFinal}
+			if _, configured := route["default_domain_resolver"]; !configured {
+				route["default_domain_resolver"] = "naga-bootstrap"
+			}
+		}
+		rules, _ := route["rules"].([]any)
+		route["rules"] = append([]any{map[string]any{
+			"inbound": tunTags, "port": 53, "action": "hijack-dns",
+		}}, rules...)
+	}
 }
 
 var (
