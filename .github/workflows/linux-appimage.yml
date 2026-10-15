@@ -6,7 +6,11 @@ on:
       source_ref:
         description: Git tag or commit to build
         required: true
-        default: v1.2.7
+        default: v1.2.8
+      build_linux:
+        description: Build and verify Linux AppImage from source_ref
+        type: boolean
+        default: true
       verify_windows:
         description: Verify the published Windows installer as well
         type: boolean
@@ -21,6 +25,7 @@ permissions:
 
 jobs:
   build:
+    if: inputs.build_linux
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
@@ -119,7 +124,8 @@ jobs:
         run: choco install innosetup -y --no-progress
       - name: Build Windows setup and portable
         shell: pwsh
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ./source/scripts/windows/build.ps1
+        working-directory: source
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows/build.ps1
       - name: Verify new Windows installer
         shell: pwsh
         run: |
