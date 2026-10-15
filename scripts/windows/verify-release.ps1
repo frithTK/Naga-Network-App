@@ -1,4 +1,5 @@
 # Only install packages and create test adapters on a disposable CI runner.
+param([string]$LocalArtifacts = '')
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This check requires a disposable CI runner.' }
 if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'Expected a release tag' }
@@ -6,15 +7,21 @@ $version = $env:RELEASE_TAG.Substring(1)
 $work = Join-Path $env:RUNNER_TEMP 'naga-release-check'
 $install = Join-Path $work 'installed'
 New-Item -ItemType Directory -Path $work -Force | Out-Null
-$metadata = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0) { throw 'Cannot read release metadata' }
+if (-not $LocalArtifacts) {
+    $metadata = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot read release metadata' }
+}
 $names = @("NagaNetwork-$version-windows-x64-setup.exe", "NagaNetwork-$version-windows-x64.zip")
 foreach ($name in $names) {
-    gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern $name --dir $work
-    if ($LASTEXITCODE -ne 0) { throw "Cannot download $name" }
-    $asset = $metadata.assets | Where-Object name -eq $name
-    $hash = 'sha256:' + (Get-FileHash -LiteralPath (Join-Path $work $name) -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($hash -ne $asset.digest) { throw "Incorrect asset digest: $name" }
+    if ($LocalArtifacts) {
+        Copy-Item -LiteralPath (Join-Path $LocalArtifacts $name) -Destination $work
+    } else {
+        gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern $name --dir $work
+        if ($LASTEXITCODE -ne 0) { throw "Cannot download $name" }
+        $asset = $metadata.assets | Where-Object name -eq $name
+        $hash = 'sha256:' + (Get-FileHash -LiteralPath (Join-Path $work $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($hash -ne $asset.digest) { throw "Incorrect asset digest: $name" }
+    }
 }
 $setup = Start-Process -FilePath (Join-Path $work $names[0]) -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$install", "/LOG=$work/install.log") -WindowStyle Hidden -Wait -PassThru
 if ($setup.ExitCode -ne 0) { throw "Setup exit code: $($setup.ExitCode)" }

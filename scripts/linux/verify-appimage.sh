@@ -31,7 +31,11 @@ cat >"${work}/bin/pkexec" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'authorized\n' >> "${NAGA_CI_AUTH_LOG:?}"
-exec sudo env "PKEXEC_UID=$(id -u)" "$@"
+[[ "$1" == /bin/bash && -f "$2" ]]
+exec sudo env "PKEXEC_UID=$(id -u)" /bin/bash -E -c '
+  trap '\''echo "Installer failed at line ${LINENO}" >&2'\'' ERR
+  source "$1"
+' ci "$2"
 SH
 chmod +x "${work}/bin/pkexec"
 export PATH="${work}/bin:${PATH}"
