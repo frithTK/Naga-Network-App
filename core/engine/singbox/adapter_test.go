@@ -3,6 +3,7 @@ package singbox
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,11 +13,50 @@ import (
 	"naga.network/core/profile"
 )
 
+func TestMain(m *testing.M) {
+	if parent := os.Getenv("NAGA_TEST_CONFIG_CHECK_PARENT"); parent != "" {
+		if len(os.Args) != 4 || os.Args[1] != "check" || os.Args[2] != "-c" {
+			fmt.Fprintln(os.Stderr, "unexpected config check arguments")
+			os.Exit(1)
+		}
+		path := os.Args[3]
+		dir := filepath.Dir(path)
+		cwd, err := os.Getwd()
+		if err != nil || !strings.EqualFold(filepath.Clean(cwd), filepath.Clean(dir)) ||
+			!strings.EqualFold(filepath.Dir(dir), parent) {
+			fmt.Fprintln(os.Stderr, "config check did not use ConfigDir")
+			os.Exit(1)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || !json.Valid(data) {
+			fmt.Fprintln(os.Stderr, "config check did not receive JSON")
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 func TestAdapterCheckConfigUsesConfigDir(t *testing.T) {
 	parent := t.TempDir()
-	adapter := Adapter{BinaryPath: "true", ConfigDir: parent}
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := Adapter{
+		BinaryPath: binary,
+		ConfigDir:  parent,
+		Env:        []string{"NAGA_TEST_CONFIG_CHECK_PARENT=" + parent},
+	}
 	if err := adapter.checkConfig(context.Background(), []byte(`{"outbounds":[{"type":"direct","tag":"direct"}]}`)); err != nil {
 		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatal("temporary config check files were not removed")
 	}
 }
 
