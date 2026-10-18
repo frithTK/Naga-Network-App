@@ -2,6 +2,8 @@
 
 Требуется Mac с Apple Silicon (включая M2) и macOS 14 или новее.
 
+[Скачать DMG](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-check1/NagaNetwork-1.2.9-macos-arm64.dmg) · [Файлы сборки и checksum](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-check1). Вход в GitHub не нужен. Проверенный source commit: `6f4e2bf382d2d21d293e0cb2b6de5d9abc233506`.
+
 1. Откройте тестовый DMG и перетащите **Naga Network** в **Программы**. Откройте установленное приложение.
 2. Нажмите **«Проверить Mac»**. Если откроются настройки macOS, разрешите Naga работать в фоне. Приложение продолжит проверку автоматически.
 3. Дождитесь результата и нажмите **«Скопировать отчёт»**. Передайте этот текст разработчику.

@@ -18,7 +18,7 @@ Native CI также запускает Go tests/vet и проверяет го�
 
 Дополнительные инженерные проверки приложения на M2:
 
-1. Скачать [DMG тестовой сборки](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-b14/NagaNetwork-1.2.9-macos-arm64.dmg) напрямую, без входа в GitHub. [Остальные файлы и checksum](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-b14).
+1. Скачать [DMG тестовой сборки](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-check1/NagaNetwork-1.2.9-macos-arm64.dmg) напрямую, без входа в GitHub. [Остальные файлы и checksum](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-check1).
 2. Открыть скачанный DMG, перетащить `Naga Network.app` в Applications и запустить установленную копию. В сборках до добавления DMG используется вложенный `macos-application.zip`. Если macOS блокирует открытие ad-hoc приложения, записать сообщение и использовать штатное разрешение через «Конфиденциальность и безопасность», если оно доступно.
 3. Записать версию macOS, поведение первого запуска и наличие основного экрана.
 4. Дождаться основного экрана после запуска встроенного backend; при ошибке записать сообщение. Проверить импорт небольшого JSON/CONF через «Из файла», отмену выбора, Unicode в имени файла и сохранение профиля/настроек после `⌘Q` и повторного открытия.
@@ -38,7 +38,7 @@ bash scripts/macos/build-service-probe.sh B
 
 Иконки macOS получены из существующего `assets/brand/naga-mark-red.svg`. Для повторного экспорта нужен `rsvg-convert`: `bash scripts/macos/generate-icons.sh`. Сборка Xcode использует уже сохранённые PNG и не требует librsvg.
 
-Проверенный пакет: [DMG](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-b14/NagaNetwork-1.2.9-macos-arm64.dmg), source `87bcd7b5fd66cb58cc8ff64417356ebac4acb7f9`. Прямые файлы и SHA256SUMS опубликованы в [отдельном pre-release](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-b14). Actions artifacts остаются дополнительным способом скачивания и требуют входа в GitHub. Общая native проверка: [run 39150715018](https://github.com/frithTK/Naga-Network-App/actions/runs/39150715018).
+Проверенный пакет с кнопкой «Проверить Mac»: [DMG](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-check1/NagaNetwork-1.2.9-macos-arm64.dmg), source `6f4e2bf382d2d21d293e0cb2b6de5d9abc233506`. Прямые файлы и SHA256SUMS опубликованы в [отдельном pre-release](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-check1). Actions artifacts остаются дополнительным способом скачивания и требуют входа в GitHub. Все шесть native jobs прошли: [run 39152885679](https://github.com/frithTK/Naga-Network-App/actions/runs/39152885679).
 
 ## Приложение с пользовательским backend
 
