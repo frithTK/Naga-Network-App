@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 
 	"naga.network/core/control"
 	"naga.network/core/storage"
@@ -58,7 +60,15 @@ func runAppSession(parent io.Reader, readiness io.Writer, singBoxPath string) (e
 	if err != nil {
 		return fmt.Errorf("start application backend: %w", err)
 	}
-	defer local.Stop()
+	defer func() {
+		// Let in-flight profile/settings writes finish before process exit.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := local.Server.Shutdown(ctx); err != nil {
+			_ = local.Server.Close()
+		}
+		local.Stop()
+	}()
 	if err := json.NewEncoder(readiness).Encode(map[string]any{
 		"type": "ready", "protocol_version": 1, "endpoint": "http://" + local.Server.Addr,
 		"token": local.Token, "version": version.Version, "data_dir": root,
