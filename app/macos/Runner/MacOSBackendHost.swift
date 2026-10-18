@@ -23,6 +23,10 @@ final class MacOSBackendHost {
     switch call.method {
     case "startBackend": start(result)
     case "stopBackend": stop { result(nil) }
+    case "runMacOSCheck": MacOSQuickCheck.shared.run(result: result)
+    case "macOSCheckState": result(MacOSQuickCheck.shared.state)
+    case "cancelMacOSCheck": MacOSQuickCheck.shared.cancel(result: result)
+    case "cleanupMacOSCheck": MacOSQuickCheck.shared.retryCleanup(result: result)
     case "pickConfigFile":
       let panel = NSOpenPanel()
       panel.title = "Naga Network"

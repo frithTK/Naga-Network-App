@@ -15,6 +15,7 @@ class MainFlutterWindow: NSWindow {
       name: "eu.nagavpn.naga_network/macos", binaryMessenger: flutterViewController.engine.binaryMessenger)
     backendChannel = channel
     MacOSBackendHost.shared.channel = channel
+    MacOSQuickCheck.shared.cleanInterruptedCheck()
     channel.setMethodCallHandler { call, result in
       MacOSBackendHost.shared.handle(call, result: result)
     }

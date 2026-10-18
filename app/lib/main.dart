@@ -15,6 +15,7 @@ import 'config_file_picker.dart';
 import 'subscription_fetch.dart';
 import 'subscription_link.dart';
 import 'macos_backend.dart';
+import 'macos_diagnostics.dart';
 
 part 'ui/home.dart';
 part 'ui/components.dart';
@@ -555,35 +556,37 @@ class NagaNetworkApp extends StatelessWidget {
       title: 'Naga Network',
       debugShowCheckedModeBanner: false,
       theme: nagaTheme(),
-      builder: (context, child) => developmentNotice == null
-          ? child!
-          : Column(
-              children: [
-                Material(
-                  color: _surface,
-                  child: SafeArea(
-                    bottom: false,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 10,
-                      ),
-                      child: Text(
-                        developmentNotice!,
-                        style: const TextStyle(color: _muted, fontSize: 12),
-                      ),
-                    ),
+      home: Column(
+        children: [
+          if (developmentNotice != null && controlPlane != null)
+            MacOSCheckBanner(client: controlPlane!, notice: developmentNotice!)
+          else if (developmentNotice != null)
+            Material(
+              color: _surface,
+              child: SafeArea(
+                bottom: false,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 10,
+                  ),
+                  child: Text(
+                    developmentNotice!,
+                    style: const TextStyle(color: _muted, fontSize: 12),
                   ),
                 ),
-                Expanded(child: child!),
-              ],
+              ),
             ),
-      home: Uri.base.queryParameters['design'] == 'lab'
-          ? const DesignGalleryPage()
-          : DashboardPage(
-              initialImportURL: initialImportURL,
-              controlPlane: controlPlane,
-            ),
+          Expanded(
+            child: Uri.base.queryParameters['design'] == 'lab'
+                ? const DesignGalleryPage()
+                : DashboardPage(
+                    initialImportURL: initialImportURL,
+                    controlPlane: controlPlane,
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }

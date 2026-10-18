@@ -34,6 +34,11 @@ final class ProbeListener: NSObject, NSXPCListenerDelegate {
       return
     }
     let delegate = ProbeListener()
+#if INTEGRATED_DIAGNOSTIC
+    // A killed test UI must not leave a permanently running diagnostic process.
+    // Registration is cleaned by the app on completion, cancellation or next launch.
+    DispatchQueue.global().asyncAfter(deadline: .now() + 60) { exit(0) }
+#endif
     let listener = NSXPCListener(machServiceName: probeHelperID)
     listener.delegate = delegate
     listener.resume()

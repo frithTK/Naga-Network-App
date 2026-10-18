@@ -41,6 +41,16 @@ def inspect(bundle):
     if entitlement_values.get('com.apple.security.app-sandbox', False):
         raise RuntimeError('external macOS channel must not enable App Sandbox')
 
+    diagnostic_id = 'eu.nagavpn.nagaNetwork.DiagnosticHelper'
+    diagnostic_program = 'Contents/Helpers/NagaDiagnosticHelper'
+    daemon = plistlib.loads((bundle / 'Contents/Library/LaunchDaemons' /
+                            (diagnostic_id + '.plist')).read_bytes())
+    if daemon != {'Label': diagnostic_id, 'BundleProgram': diagnostic_program,
+                  'MachServices': {diagnostic_id: True}}:
+        raise RuntimeError('unexpected diagnostic daemon configuration')
+    if not (bundle / diagnostic_program).is_file():
+        raise RuntimeError('diagnostic helper is missing')
+
     executable = bundle / 'Contents/MacOS' / info['CFBundleExecutable']
     code = []
     for path in sorted(bundle.rglob('*')):

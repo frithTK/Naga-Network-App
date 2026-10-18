@@ -1,6 +1,6 @@
 # macOS ARM64: bootstrap
 
-Текущий этап включает `.app` со встроенным пользовательским backend, тестовый DMG, сборку закреплённых компонентов и отдельный diagnostic service probe. Основной план: [MACOS_DEVELOPMENT_PLAN.md](../../docs/MACOS_DEVELOPMENT_PLAN.md).
+Текущий этап включает `.app` со встроенным пользовательским backend, кнопкой «Проверить Mac», тестовый DMG, сборку закреплённых компонентов и инженерный service probe. Основной план: [MACOS_DEVELOPMENT_PLAN.md](../../docs/MACOS_DEVELOPMENT_PLAN.md).
 
 ```sh
 python3 scripts/macos/bootstrap.py --component all
@@ -10,11 +10,13 @@ python3 scripts/macos/bootstrap.py --component all
 
 На Linux Go-компоненты кросс-компилируются, native execution и сборка hev остаются `UNAVAILABLE`. На ARM64 macOS дополнительно проверяется запуск CLI: help/version, а для sing-box — `check` конфига без TUN. Эти операции не устанавливают службу и не меняют маршруты/DNS. `vpn_device_acceptance` остаётся `UNAVAILABLE` до физического прогона на M2.
 
-Workflow [macos-bootstrap.yml](../../.github/workflows/macos-bootstrap.yml) запускает независимые native jobs для четырёх компонентов и собирает Flutter `.app`. macOS `.app` включает пользовательский backend; установка системного helper и полноценный VPN относятся к следующим задачам плана. Diagnostic helper поставляется отдельно.
+Workflow [macos-bootstrap.yml](../../.github/workflows/macos-bootstrap.yml) запускает независимые native jobs для четырёх компонентов и собирает Flutter `.app`. В него включены пользовательский backend и status-only diagnostic helper. Полноценный VPN helper относится к следующим задачам плана. A/B probe сохранён отдельно для инженерных проверок.
 
 Native CI также запускает Go tests/vet и проверяет готовый `.app` через `check-app.py`: версии из pubspec, deployment target, strict code signature, отсутствие App Sandbox, ARM64 и динамические зависимости. Отчёт `macos-app-inspection.json` сохраняется вместе с ZIP приложения.
 
-Для ручной проверки артефакта приложения на M2:
+Для обычной ручной проверки M2 достаточно [быстрой инструкции](../../docs/MACOS_QUICK_CHECK.md): установить DMG → «Проверить Mac» → разрешить фоновую службу, если macOS попросит → скопировать отчёт. Регистрация, XPC и удаление выполняются приложением. A/B, Терминал и перезагрузка не требуются.
+
+Дополнительные инженерные проверки приложения на M2:
 
 1. Скачать [DMG тестовой сборки](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-b14/NagaNetwork-1.2.9-macos-arm64.dmg) напрямую, без входа в GitHub. [Остальные файлы и checksum](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-b14).
 2. Открыть скачанный DMG, перетащить `Naga Network.app` в Applications и запустить установленную копию. В сборках до добавления DMG используется вложенный `macos-application.zip`. Если macOS блокирует открытие ad-hoc приложения, записать сообщение и использовать штатное разрешение через «Конфиденциальность и безопасность», если оно доступно.

@@ -18,6 +18,25 @@ bundle="${project_dir}/app/build/macos/Build/Products/Release/Naga Network.app"
 mkdir -p "${bundle}/Contents/Helpers"
 cp "${project_dir}/build/macos-app-runtime/naga-control" "${bundle}/Contents/Helpers/naga-control"
 chmod 755 "${bundle}/Contents/Helpers/naga-control"
+swiftc -parse-as-library -swift-version 5 -O -target arm64-apple-macos14.0 -D INTEGRATED_DIAGNOSTIC \
+  "${project_dir}/native/macos/service-probe/ProbeProtocol.swift" \
+  "${project_dir}/native/macos/service-probe/ProbeHelper.swift" \
+  -o "${bundle}/Contents/Helpers/NagaDiagnosticHelper"
+python3 - "${bundle}" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+bundle = Path(sys.argv[1])
+identifier = 'eu.nagavpn.nagaNetwork.DiagnosticHelper'
+directory = bundle / 'Contents/Library/LaunchDaemons'
+directory.mkdir(parents=True, exist_ok=True)
+(directory / (identifier + '.plist')).write_bytes(plistlib.dumps({
+    'Label': identifier,
+    'BundleProgram': 'Contents/Helpers/NagaDiagnosticHelper',
+    'MachServices': {identifier: True},
+}))
+PY
 codesign --force --sign - --identifier eu.nagavpn.nagaNetwork.Control "${bundle}/Contents/Helpers/naga-control"
+codesign --force --sign - --identifier eu.nagavpn.nagaNetwork.DiagnosticHelper "${bundle}/Contents/Helpers/NagaDiagnosticHelper"
 codesign --force --sign - --entitlements macos/Runner/Release.entitlements "${bundle}"
 echo "Application with user backend: ${bundle}"

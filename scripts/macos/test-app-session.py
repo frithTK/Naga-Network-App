@@ -17,6 +17,11 @@ def main():
     bundle = Path(sys.argv[1]).resolve()
     info = plistlib.loads((bundle / 'Contents/Info.plist').read_bytes())
     binary = bundle / 'Contents/Helpers/naga-control'
+    diagnostic = bundle / 'Contents/Helpers/NagaDiagnosticHelper'
+    diagnostic_status = json.loads(subprocess.check_output([str(diagnostic), '--self-check']))
+    assert diagnostic_status['build'] == 'integrated-1'
+    assert diagnostic_status['protocol_version'] == 1
+    assert diagnostic_status['euid'] == os.geteuid()
     with tempfile.TemporaryDirectory(prefix='naga-macos-session-') as temp:
         home = Path(temp) / 'Пользователь с пробелами'
         root = home / 'Library/Application Support/Naga Network'
