@@ -33,6 +33,7 @@ type LocalOptions struct {
 	LogDir                      string
 	RejectBrowserOrigin         bool
 	ConnectionUnavailableReason string
+	OnlyExplicitRuntime         bool
 }
 
 type LocalServer struct {
@@ -97,7 +98,10 @@ func StartLocal(opts LocalOptions) (*LocalServer, error) {
 	if journalErr != nil {
 		journal = nil
 	}
-	binaryPath, _ := singbox.DiscoverControlRuntime(opts.SingBoxPath)
+	binaryPath := ""
+	if !opts.OnlyExplicitRuntime || strings.TrimSpace(opts.SingBoxPath) != "" {
+		binaryPath, _ = singbox.DiscoverControlRuntime(opts.SingBoxPath)
+	}
 	adapter := singbox.Adapter{
 		BinaryPath: binaryPath,
 		Journal:    journal,

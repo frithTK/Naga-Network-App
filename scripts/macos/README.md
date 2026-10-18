@@ -16,8 +16,8 @@ Native CI также запускает Go tests/vet и проверяет го�
 
 Для ручной проверки артефакта приложения на M2:
 
-1. Скачать ZIP из завершившегося Actions run и распаковать его штатным архиватором.
-2. Перенести `Naga Network.app` в `/Applications` и открыть.
+1. Скачать artifact `macos-application-<номер>` из завершившегося Actions run и распаковать его штатным архиватором.
+2. Открыть DMG из каталога `macos-dmg`, перетащить `Naga Network.app` в Applications и запустить установленную копию. В сборках до добавления DMG используется вложенный `macos-application.zip`. Если macOS блокирует открытие ad-hoc приложения, записать сообщение и использовать штатное разрешение через «Конфиденциальность и безопасность», если оно доступно.
 3. Записать версию macOS, поведение первого запуска и наличие основного экрана.
 4. Дождаться основного экрана после запуска встроенного backend; при ошибке записать сообщение. Проверить импорт небольшого JSON/CONF через «Из файла», отмену выбора, Unicode в имени файла и сохранение профиля/настроек после `⌘Q` и повторного открытия.
 5. После `⌘Q` в «Мониторинге системы» не должен оставаться дочерний `naga-control`. При принудительном завершении UI backend также должен закончить работу по EOF. Проверить повторное открытие приложения и отсутствие второго backend для тех же данных.
@@ -41,3 +41,9 @@ bash scripts/macos/build-service-probe.sh B
 На ARM64 Mac с Go/Flutter/Xcode: `bash scripts/macos/build-app.sh`. Скрипт собирает backend и Release UI из одной версии pubspec, встраивает `naga-control` в `Contents/Helpers` и подписывает вложенный code перед внешним app bundle. Запуск простого `flutter build macos` создаёт UI без этого шага упаковки; для установки нужен полный результат скрипта.
 
 `test-app-session.py <путь-к-app>` проверяет упакованный CLI в изолированном временном домашнем каталоге: readiness, версию, обязательный token, отказ browser origin и штатную остановку по закрытию parent pipe. Программа не включает VPN. Нельзя запускать `--app-session` с выводом в терминал/журнал: этот режим требует приватных stdin/stdout pipes.
+
+## Тестовый DMG
+
+После `build-app.sh`: `bash scripts/macos/build-dmg.sh`. В `build/macos-dmg/` сохраняются `NagaNetwork-<ver>-macos-arm64.dmg` и `SHA256SUMS.txt`. Это development-образ с ad-hoc приложением и явно указанным отсутствием VPN, не production release.
+
+`python3 scripts/macos/check-dmg.py <image> --report build/macos-dmg/dmg-inspection.json` проверяет checksum образа, монтирует его read-only, проверяет Applications link/инструкцию/состав/подписи/ARM64 и запускает private session упакованного backend без VPN. После проверки образ отмонтируется. Сценарии процессов и каналов описаны в [контракте](../../docs/MACOS_PROCESS_CONTRACT.md).

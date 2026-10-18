@@ -52,6 +52,7 @@ func runAppSession(parent io.Reader, readiness io.Writer, singBoxPath string) (e
 	local, err := control.StartLocal(control.LocalOptions{
 		Listen: "127.0.0.1:0", DataDir: root, TokenPath: tokenPath,
 		SingBoxPath: singBoxPath, LogDir: logDir, RejectBrowserOrigin: true,
+		OnlyExplicitRuntime:         true,
 		ConnectionUnavailableReason: "VPN в тестовой сборке macOS ещё недоступен: системная служба не подключена.",
 	})
 	if err != nil {

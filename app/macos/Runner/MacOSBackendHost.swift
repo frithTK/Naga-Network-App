@@ -68,6 +68,8 @@ final class MacOSBackendHost {
     // The packaged app gets its token from its own child, never from a shell.
     environment.removeValue(forKey: "NAGA_CONTROL_TOKEN")
     environment.removeValue(forKey: "NAGA_CONTROL_TOKEN_FILE")
+    environment.removeValue(forKey: "NAGA_SINGBOX_PATH")
+    environment.removeValue(forKey: "NAGA_NATIVE_LIB_DIR")
     process.environment = environment
     process.standardInput = stdin
     process.standardOutput = stdout

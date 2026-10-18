@@ -13,6 +13,7 @@ on:
       - 'core/**'
       - 'app/**'
       - 'native/macos/**'
+      - 'packaging/macos/**'
   workflow_dispatch:
 
 permissions:
@@ -102,6 +103,11 @@ jobs:
         run: python3 ../scripts/macos/check-app.py 'build/macos/Build/Products/Release/Naga Network.app' --report ../build/macos-app-inspection.json
       - name: Exercise packaged backend without VPN
         run: python3 ../scripts/macos/test-app-session.py 'build/macos/Build/Products/Release/Naga Network.app'
+      - name: Build and verify development DMG
+        run: |
+          bash ../scripts/macos/build-dmg.sh
+          macos_app_version="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' 'build/macos/Build/Products/Release/Naga Network.app/Contents/Info.plist')"
+          python3 ../scripts/macos/check-dmg.py "../build/macos-dmg/NagaNetwork-${macos_app_version}-macos-arm64.dmg" --report ../build/macos-dmg/dmg-inspection.json
       - name: Preserve app bundle metadata in zip
         run: |
           mkdir -p ../build
@@ -112,6 +118,9 @@ jobs:
           path: |
             build/macos-application.zip
             build/macos-app-inspection.json
+            build/macos-dmg/*.dmg
+            build/macos-dmg/SHA256SUMS.txt
+            build/macos-dmg/dmg-inspection.json
           retention-days: 14
 
   service-probe:
