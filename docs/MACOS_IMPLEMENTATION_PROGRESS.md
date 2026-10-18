@@ -86,10 +86,14 @@ Release `.app` build, Dart analyzer и Flutter tests прошли на native ma
 
 Исходный commit `87bcd7b5fd66cb58cc8ff64417356ebac4acb7f9`, [run 39150715018](https://github.com/frithTK/Naga-Network-App/actions/runs/39150715018): все шесть native jobs **PASS**. Оба запуска общих Quality checks для push/PR также **PASS**. На macOS прошли Go tests/vet, Dart analyzer, 127 Flutter tests; три Linux golden tests штатно пропущены на macOS и проверены общим Linux job.
 
-- [Приложение и DMG](https://github.com/frithTK/Naga-Network-App/actions/runs/39150715018/artifacts/12145013532): внешний Actions ZIP содержит `macos-dmg/NagaNetwork-1.2.9-macos-arm64.dmg`, SHA256SUMS, inspection reports и альтернативный ZIP `.app`.
-- [Диагностический service probe A/B](https://github.com/frithTK/Naga-Network-App/actions/runs/39150715018/artifacts/12145246492): отдельные версии с протоколами 1/2; инструкция [M2 service probe](MACOS_M2_SERVICE_PROBE.md).
+- [Прямой DMG](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-b14/NagaNetwork-1.2.9-macos-arm64.dmg): публичное скачивание без входа в GitHub; остальные файлы и SHA256SUMS — в [тестовом релизе](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-b14). Исходные inspection reports и альтернативный ZIP `.app` сохранены в Actions run.
+- [Диагностический service probe A/B](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-b14): отдельные версии с протоколами 1/2; инструкция [M2 service probe](MACOS_M2_SERVICE_PROBE.md).
 - DMG: 31 463 784 байта; SHA-256 `c634e5e6f19215f90ae29f92d39880560091af12a7c773ba3720a8ed076cd548`.
 
 Финальные артефакты скачаны и проверены локально: checksum образа совпадает с SHA256SUMS и native inspection report, source commit совпадает; оба ZIP пробника имеют совпадающие checksum и ARM64 app/helper. Во время native CI образ прошёл `hdiutil verify`, read-only mount, strict signature/ARM64/dependency inspection четырёх Mach-O, startup/auth/origin/EOF smoke backend и отмонтирование.
 
 **Открытые проверки:** пользователь сообщил, что service probe на M2 ещё не запускал. Физическое открытие окна/NSOpenPanel, сохранение профилей после переустановки и lifecycle процессов остаются непроверенными. Для privileged VPN нужны результаты регистрации/XPC A и дальнейшие M00.03–M00.07; системная интеграция, TUN/DNS и рабочее VPN-подключение не объявляются готовыми. Cache/helper-state paths, миграция dev-данных и Darwin network detector остаются открытыми задачами M02. Полный статус плана отражён в подшагах; этот DMG является тестовой поставкой текущей реализации.
+
+## Исправление доступа к скачиванию
+
+Пользователь получил 404 по ссылке Actions artifact. Проверка API подтвердила, что artifact существует и не истёк. Для скачивания через браузер опубликован отдельный публичный pre-release `macos-dev-1.2.9-b14` из проверенного commit; DMG и A/B probe перенесены без изменения файлов, опубликованы общие checksum и инструкция. GitHub asset digest DMG совпадает с проверенным SHA-256. Прямой DMG URL проверен без авторизации: HTTP 200. Production latest остаётся `v1.2.9`.

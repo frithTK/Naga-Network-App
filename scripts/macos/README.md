@@ -16,8 +16,8 @@ Native CI также запускает Go tests/vet и проверяет го�
 
 Для ручной проверки артефакта приложения на M2:
 
-1. Скачать artifact `macos-application-<номер>` из завершившегося Actions run и распаковать его штатным архиватором.
-2. Открыть DMG из каталога `macos-dmg`, перетащить `Naga Network.app` в Applications и запустить установленную копию. В сборках до добавления DMG используется вложенный `macos-application.zip`. Если macOS блокирует открытие ad-hoc приложения, записать сообщение и использовать штатное разрешение через «Конфиденциальность и безопасность», если оно доступно.
+1. Скачать [DMG тестовой сборки](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-b14/NagaNetwork-1.2.9-macos-arm64.dmg) напрямую, без входа в GitHub. [Остальные файлы и checksum](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-b14).
+2. Открыть скачанный DMG, перетащить `Naga Network.app` в Applications и запустить установленную копию. В сборках до добавления DMG используется вложенный `macos-application.zip`. Если macOS блокирует открытие ad-hoc приложения, записать сообщение и использовать штатное разрешение через «Конфиденциальность и безопасность», если оно доступно.
 3. Записать версию macOS, поведение первого запуска и наличие основного экрана.
 4. Дождаться основного экрана после запуска встроенного backend; при ошибке записать сообщение. Проверить импорт небольшого JSON/CONF через «Из файла», отмену выбора, Unicode в имени файла и сохранение профиля/настроек после `⌘Q` и повторного открытия.
 5. После `⌘Q` в «Мониторинге системы» не должен оставаться дочерний `naga-control`. При принудительном завершении UI backend также должен закончить работу по EOF. Проверить повторное открытие приложения и отсутствие второго backend для тех же данных.
@@ -36,7 +36,7 @@ bash scripts/macos/build-service-probe.sh B
 
 Иконки macOS получены из существующего `assets/brand/naga-mark-red.svg`. Для повторного экспорта нужен `rsvg-convert`: `bash scripts/macos/generate-icons.sh`. Сборка Xcode использует уже сохранённые PNG и не требует librsvg.
 
-Проверенный пакет: [macos-application-7](https://github.com/frithTK/Naga-Network-App/actions/runs/39150715018/artifacts/12145013532), source `87bcd7b5fd66cb58cc8ff64417356ebac4acb7f9`. Внешний Actions ZIP содержит каталог `macos-dmg` с образом и SHA256SUMS. Общая native проверка: [run 39150715018](https://github.com/frithTK/Naga-Network-App/actions/runs/39150715018).
+Проверенный пакет: [DMG](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-b14/NagaNetwork-1.2.9-macos-arm64.dmg), source `87bcd7b5fd66cb58cc8ff64417356ebac4acb7f9`. Прямые файлы и SHA256SUMS опубликованы в [отдельном pre-release](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-b14). Actions artifacts остаются дополнительным способом скачивания и требуют входа в GitHub. Общая native проверка: [run 39150715018](https://github.com/frithTK/Naga-Network-App/actions/runs/39150715018).
 
 ## Приложение с пользовательским backend
 

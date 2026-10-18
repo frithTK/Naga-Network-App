@@ -6,10 +6,10 @@
 
 ## Подготовка
 
-1. Скачать проверенный [артефакт A/B из run 39150715018](https://github.com/frithTK/Naga-Network-App/actions/runs/39150715018/artifacts/12145246492), commit `87bcd7b5fd66cb58cc8ff64417356ebac4acb7f9`. Более поздние сборки доступны в Actions для ветки `feat/macos-arm64-bootstrap`.
-2. В разделе Artifacts скачать `macos-service-probe-<номер>`. Для скачивания Actions artifacts нужен вход в GitHub; срок хранения — 14 дней.
-3. Распаковать внешний архив. В каталогах `A` и `B` находятся отдельные ZIP и SHA-256. Сохранить оба ZIP: они содержат приложения с одинаковым именем и предназначены для последовательной установки.
-4. Записать версию и build macOS через «Об этом Mac» → сведения о системе. При желании проверить checksum в Терминале: `shasum -a 256 <путь-к-ZIP>`; сравнить с соответствующим `SHA256SUMS.txt`.
+1. Скачать [ZIP версии A](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-b14/NagaServiceProbe-A-macos-arm64.zip), [ZIP версии B](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-b14/NagaServiceProbe-B-macos-arm64.zip) и [SHA256SUMS.txt](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-b14/SHA256SUMS.txt). Файлы опубликованы в [тестовом релизе](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-b14) и доступны без входа в GitHub. Исходный commit `87bcd7b5fd66cb58cc8ff64417356ebac4acb7f9`.
+2. Сохранить оба ZIP. Распаковывать их по очереди или в отдельные каталоги A/B: приложения имеют одинаковое имя и предназначены для последовательной установки.
+3. Записать версию и build macOS через «Об этом Mac» → сведения о системе.
+4. При желании проверить checksum в Терминале: `shasum -a 256 <путь-к-ZIP>`; сравнить с соответствующей строкой `SHA256SUMS.txt`.
 
 ## Версия A: регистрация и XPC
 
