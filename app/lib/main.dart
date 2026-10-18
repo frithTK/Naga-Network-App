@@ -14,6 +14,7 @@ import 'node_probe_controller.dart';
 import 'config_file_picker.dart';
 import 'subscription_fetch.dart';
 import 'subscription_link.dart';
+import 'macos_backend.dart';
 
 part 'ui/home.dart';
 part 'ui/components.dart';
@@ -27,7 +28,21 @@ void main(List<String> args) {
       'Inter',
     ], await rootBundle.loadString('assets/fonts/OFL.txt'));
   });
-  runApp(NagaNetworkApp(initialImportURL: launchSubscriptionURL(args)));
+  final initialURL = launchSubscriptionURL(args);
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.macOS) {
+    WidgetsFlutterBinding.ensureInitialized();
+    runApp(
+      MacOSBackendGate(
+        builder: (client) => NagaNetworkApp(
+          initialImportURL: initialURL,
+          controlPlane: client,
+          developmentNotice: 'Тестовая сборка macOS: профили и настройки доступны. VPN ещё не подключён.',
+        ),
+      ),
+    );
+  } else {
+    runApp(NagaNetworkApp(initialImportURL: initialURL));
+  }
 }
 
 const _trayChannel = MethodChannel('eu.nagavpn.naga_network/tray');
@@ -523,9 +538,16 @@ ThemeData nagaTheme() {
 }
 
 class NagaNetworkApp extends StatelessWidget {
-  const NagaNetworkApp({super.key, this.initialImportURL});
+  const NagaNetworkApp({
+    super.key,
+    this.initialImportURL,
+    this.controlPlane,
+    this.developmentNotice,
+  });
 
   final String? initialImportURL;
+  final ControlPlaneClient? controlPlane;
+  final String? developmentNotice;
 
   @override
   Widget build(BuildContext context) {
@@ -533,9 +555,35 @@ class NagaNetworkApp extends StatelessWidget {
       title: 'Naga Network',
       debugShowCheckedModeBanner: false,
       theme: nagaTheme(),
+      builder: (context, child) => developmentNotice == null
+          ? child!
+          : Column(
+              children: [
+                Material(
+                  color: _surface,
+                  child: SafeArea(
+                    bottom: false,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      child: Text(
+                        developmentNotice!,
+                        style: const TextStyle(color: _muted, fontSize: 12),
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(child: child!),
+              ],
+            ),
       home: Uri.base.queryParameters['design'] == 'lab'
           ? const DesignGalleryPage()
-          : DashboardPage(initialImportURL: initialImportURL),
+          : DashboardPage(
+              initialImportURL: initialImportURL,
+              controlPlane: controlPlane,
+            ),
     );
   }
 }
@@ -2190,7 +2238,9 @@ class _DashboardPageState extends State<DashboardPage>
 
   Future<void> _loadAppUpdatePrefs() async {
     if (runningUnderFlutterTest()) return;
-    final path = await resolveAppUpdatePrefsPath();
+    final path = await resolveAppUpdatePrefsPath(
+      dataDirectory: _controlPlane.dataDirectory,
+    );
     final prefs = loadAppUpdatePrefs(path: path);
     final installError = await _updater?.androidInstallError();
     if (!mounted) return;

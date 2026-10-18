@@ -31,28 +31,30 @@ import (
 )
 
 type Server struct {
-	Subscriptions subscription.Client
-	Storage       *storage.Store
-	Runtime       *RuntimeController
-	Validator     engine.Adapter
-	Token         string
-	AllowedOrigin string
-	Now           func() time.Time
-	NetworkClass  func() policy.NetworkClass
-	MutationMu    *sync.Mutex
-	Journal       *diagnostics.Logger
-	RuntimeReady  bool
-	OlcRTCReady   bool
-	Version       string
+	Subscriptions               subscription.Client
+	Storage                     *storage.Store
+	Runtime                     *RuntimeController
+	Validator                   engine.Adapter
+	Token                       string
+	AllowedOrigin               string
+	Now                         func() time.Time
+	NetworkClass                func() policy.NetworkClass
+	MutationMu                  *sync.Mutex
+	Journal                     *diagnostics.Logger
+	RuntimeReady                bool
+	OlcRTCReady                 bool
+	Version                     string
+	ConnectionUnavailableReason string
 }
 
 type healthResponse struct {
-	Service      string          `json:"service"`
-	Status       string          `json:"status"`
-	Version      string          `json:"version"`
-	RuntimeReady bool            `json:"runtime_ready"`
-	OlcRTCReady  bool            `json:"olcrtc_ready"`
-	Capabilities map[string]bool `json:"capabilities"`
+	Service                     string          `json:"service"`
+	Status                      string          `json:"status"`
+	Version                     string          `json:"version"`
+	RuntimeReady                bool            `json:"runtime_ready"`
+	OlcRTCReady                 bool            `json:"olcrtc_ready"`
+	Capabilities                map[string]bool `json:"capabilities"`
+	ConnectionUnavailableReason string          `json:"connection_unavailable_reason,omitempty"`
 }
 
 func (s Server) healthVersion() string {
@@ -256,7 +258,9 @@ func (s Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Version:      s.healthVersion(),
 			RuntimeReady: s.RuntimeReady,
 			OlcRTCReady:  s.OlcRTCReady,
-			Capabilities: map[string]bool{"node_probe_jobs": s.Runtime != nil},
+			Capabilities: map[string]bool{"node_probe_jobs": s.Runtime != nil,
+				"vpn_connect": s.ConnectionUnavailableReason == "" && s.RuntimeReady},
+			ConnectionUnavailableReason: s.ConnectionUnavailableReason,
 		})
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/diagnostics/logs":
 		s.diagnosticsLogs(w, r)
@@ -1340,6 +1344,10 @@ func (s Server) runtimeInspect(w http.ResponseWriter) {
 }
 
 func (s Server) runtimeStart(w http.ResponseWriter, r *http.Request) {
+	if s.ConnectionUnavailableReason != "" {
+		writeError(w, http.StatusServiceUnavailable, s.ConnectionUnavailableReason)
+		return
+	}
 	if s.Runtime == nil {
 		writeError(w, http.StatusServiceUnavailable, "runtime is not configured")
 		return

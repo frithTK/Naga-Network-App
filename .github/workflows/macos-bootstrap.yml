@@ -80,6 +80,14 @@ jobs:
         working-directory: app
     steps:
       - uses: actions/checkout@v4
+      - name: Read pinned Go toolchain
+        id: toolchain
+        working-directory: .
+        run: |
+          python3 -c 'import pathlib,re; print("version=" + re.search(r"^toolchain\s+go(\S+)", pathlib.Path("go.mod").read_text(), re.M).group(1))' >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.toolchain.outputs.version }}
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.47.1'
@@ -88,12 +96,12 @@ jobs:
       - run: flutter pub get
       - run: dart analyze
       - run: flutter test --reporter expanded
-      - name: Build ad-hoc application scaffold
-        run: |
-          macos_app_version="$(python3 -c 'import pathlib,re; print(re.search(r"^version:\s*([^+\s]+)", pathlib.Path("pubspec.yaml").read_text(), re.M).group(1))')"
-          flutter build macos --release --dart-define="NAGA_VERSION=${macos_app_version}"
+      - name: Build ad-hoc application with user backend
+        run: bash ../scripts/macos/build-app.sh
       - name: Inspect application metadata, signatures and ARM64 dependencies
         run: python3 ../scripts/macos/check-app.py 'build/macos/Build/Products/Release/Naga Network.app' --report ../build/macos-app-inspection.json
+      - name: Exercise packaged backend without VPN
+        run: python3 ../scripts/macos/test-app-session.py 'build/macos/Build/Products/Release/Naga Network.app'
       - name: Preserve app bundle metadata in zip
         run: |
           mkdir -p ../build

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 
@@ -28,14 +29,28 @@ Future<NagaPickedConfig?> pickNagaConfigFile() async {
   if (!file.existsSync()) {
     return null;
   }
-  final bytes = await file.readAsBytes();
+  return readNagaConfigFile(file);
+}
+
+Future<NagaPickedConfig> readNagaConfigFile(File file) async {
+  if (await file.length() > nagaMaxConfigFileBytes) {
+    throw const FormatException('config file is too large');
+  }
+  final bytes = BytesBuilder(copy: false);
+  await for (final chunk in file.openRead(0, nagaMaxConfigFileBytes + 1)) {
+    bytes.add(chunk);
+  }
   return nagaPickedConfigFromBytes(
-    Uint8List.fromList(bytes),
+    bytes.takeBytes(),
     file.uri.pathSegments.last,
   );
 }
 
 Future<String?> _pickConfigPath() async {
+  if (Platform.isMacOS) {
+    return const MethodChannel('eu.nagavpn.naga_network/macos')
+        .invokeMethod<String>('pickConfigFile');
+  }
   if (Platform.isWindows) {
     return _pickWindowsPath();
   }

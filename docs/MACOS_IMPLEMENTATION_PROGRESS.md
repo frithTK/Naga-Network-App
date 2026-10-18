@@ -64,4 +64,16 @@ Release `.app` build, Dart analyzer и Flutter tests прошли на native ma
 
 ## Нативные Go tests
 
-Первый полный macOS-прогон выявил две платформенные ошибки тестов: проверка olcRTC ожидала Linux routing на неподдерживаемой Darwin-платформе, а проверка рабочего каталога sing-box сравнивала строки путей через `/var` и `/private/var`. Для первой явно ограничены поддерживаемые платформы Linux/Windows; для второй директории сравниваются через `os.SameFile`. Сами проверки rollback и размещения временного config сохранены. Локально изменённые пакеты `core/control` и `core/engine/singbox` проходят; повтор native tests/vet ожидается. Сборочный proof выполняется перед тестами, чтобы оставлять артефакт и при тестовой ошибке.
+Первый полный macOS-прогон выявил две платформенные ошибки тестов: проверка olcRTC ожидала Linux routing на неподдерживаемой Darwin-платформе, а проверка рабочего каталога sing-box сравнивала строки путей через `/var` и `/private/var`. Для первой явно ограничены поддерживаемые платформы Linux/Windows; для второй директории сравниваются через `os.SameFile`. Сами проверки rollback и размещения временного config сохранены. Повторный [run 39139085027](https://github.com/frithTK/Naga-Network-App/actions/runs/39139085027), commit `82ed1f77b00f096361b0c0cf20aaa935d9d8d310`: все шесть native jobs прошли, включая полный `go test ./...` и `go vet ./...`. Сборочный proof выполняется перед тестами, чтобы оставлять артефакт и при тестовой ошибке.
+
+## M02: пользовательский backend
+
+Следующая реализация добавляет в пакет `Contents/Helpers/naga-control`, запускает его от пользователя и передаёт readiness по отдельному stdout pipe: версия IPC, версия приложения, собственный случайный loopback endpoint, token и data directory. Dashboard создаётся только после handshake и авторизованного health. Фиксированный порт и чужой HTTP health для bootstrap не используются.
+
+Один data directory защищён POSIX lock; повторный backend получает отказ. Входной pipe определяет жизнь дочернего процесса: EOF/SIGTERM вызывает cleanup, native host ограничивает ожидание остановки восемью секундами. Ранний выход и несовместимый handshake дают экран ошибки с повторным запуском. Принудительное завершение UI также закрывает pipe; поведение окон/процессов на физическом M2 ещё надо проверить.
+
+Профили/настройки/token находятся в `~/Library/Application Support/Naga Network`, журналы — в `~/Library/Logs/Naga Network`. Путь backend передаётся Dart для `app-update.json`; token не проходит через argv или журналы. Проверяются владелец/права каталога, symlink/public token и второй экземпляр. Отдельный cache/helper-state и миграция прежних dev-данных ещё не реализованы.
+
+Добавлены `NSOpenPanel` и ограниченное чтение config-файла: размер проверяется до чтения, поток ограничен 16 MiB + 1, UTF-8 декодируется строго. Поддержаны Unicode и пробелы. VPN API в этой сборке возвращает конкретную причину недоступности до запуска runtime; подключение системного helper остаётся следующим этапом.
+
+Локально прошли Go tests `cmd/naga-control`, `core/control`, `core/storage`, Darwin ARM64 build backend, Swift syntax parse, Dart analyzer и 31 целевой Flutter test. Проверки session выполняют настоящий дочерний процесс и проверяют readiness/auth/origin, отказ второго экземпляра, EOF cleanup, повторный запуск и сохранение token. Добавлен native smoke именно упакованного CLI. Native компиляция новой Swift-интеграции и новый `.app` ожидают следующего CI.

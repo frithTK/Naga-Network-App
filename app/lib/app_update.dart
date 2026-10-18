@@ -368,11 +368,15 @@ AppUpdatePrefs loadAppUpdatePrefs({
 }
 
 Future<String?> resolveAppUpdatePrefsPath({
+  String? dataDirectory,
   Map<String, String>? environment,
   bool? isWindows,
   bool? isAndroid,
   MethodChannel? channel,
 }) async {
+  if (dataDirectory != null && dataDirectory.isNotEmpty) {
+    return p.join(dataDirectory, 'app-update.json');
+  }
   final path = appUpdatePrefsPath(
     environment: environment,
     isWindows: isWindows,

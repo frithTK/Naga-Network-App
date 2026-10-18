@@ -54,6 +54,7 @@ def inspect(bundle):
             raise RuntimeError(f'no ARM64 slice: {path}')
         if path == executable and architectures != ['arm64']:
             raise RuntimeError(f'main executable is not native ARM64 only: {architectures}')
+        subprocess.run(['codesign', '--verify', '--strict', str(path)], check=True)
         dependencies = []
         for line in output('otool', '-arch', 'arm64', '-L', str(path)).splitlines()[1:]:
             # Preserve spaces in bundle/executable names.

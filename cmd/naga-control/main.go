@@ -29,6 +29,7 @@ import (
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8765", "local control-plane address")
+	appSession := flag.Bool("app-session", false, "run a private child backend with a readiness message on stdout and lifetime bound to stdin")
 	token := flag.String("token", os.Getenv("NAGA_CONTROL_TOKEN"), "optional bearer token")
 	tokenFile := flag.String("token-file", os.Getenv("NAGA_CONTROL_TOKEN_FILE"), "file containing the bearer token")
 	production := flag.Bool("production", strings.EqualFold(os.Getenv("NAGA_CONTROL_PRODUCTION"), "true"), "require bearer authentication even on loopback")
@@ -40,6 +41,20 @@ func main() {
 	uninstallHelper := flag.Bool("uninstall-helper", false, "remove elevated TUN helper")
 	elevatedHelper := flag.Bool("elevated-helper", false, "run elevated TUN helper")
 	flag.Parse()
+	if *appSession {
+		for _, stream := range []*os.File{os.Stdin, os.Stdout} {
+			info, err := stream.Stat()
+			if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+				log.Print("application sessions require private stdin/stdout pipes")
+				os.Exit(1)
+			}
+		}
+		if err := runAppSession(os.Stdin, os.Stdout, *singBoxPath); err != nil {
+			log.Print(err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *installHelper {
 		if err := winhelper.Install(); err != nil {
 			log.Fatal(err)

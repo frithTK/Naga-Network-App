@@ -640,6 +640,7 @@ class ControlPlaneClient {
       defaultValue: 'http://127.0.0.1:8765',
     ),
     String? token,
+    this.dataDirectory,
     http.Client? client,
   }) : _baseUrl = baseUrl.replaceFirst(RegExp(r'/$'), ''),
        _token = token == null || token.trim().isEmpty
@@ -648,8 +649,11 @@ class ControlPlaneClient {
        _client = client ?? http.Client();
 
   final String _baseUrl;
+  final String? dataDirectory;
   String? _token;
   final http.Client _client;
+
+  void close() => _client.close();
 
   void updateToken(String? token) {
     final trimmed = token?.trim();

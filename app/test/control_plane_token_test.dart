@@ -4,6 +4,19 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:naga_network/control_plane_token_io.dart';
 
 void main() {
+  test('macOS token and update preferences share Application Support', () {
+    expect(
+      controlPlaneTokenFilePath(
+        environment: const {
+          'HOME': '/Users/Имя с пробелами',
+          'XDG_DATA_HOME': '/must-not-use',
+        },
+        isWindows: false,
+        isMacOS: true,
+      ),
+      '/Users/Имя с пробелами/Library/Application Support/Naga Network/control.token',
+    );
+  });
   test('prefers NAGA_CONTROL_TOKEN environment value', () {
     final token = loadControlPlaneToken(
       environment: const {
