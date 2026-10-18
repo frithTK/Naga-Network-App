@@ -43,6 +43,11 @@ jobs:
           sw_vers
           xcodebuild -version
           go version
+      - name: Native macOS Go tests and vet
+        if: matrix.component == 'naga-control'
+        run: |
+          go test -timeout=180s ./...
+          go vet ./...
       - name: Build and inspect component
         run: python3 scripts/macos/bootstrap.py --component '${{ matrix.component }}'
       - name: Save proof artifact
@@ -83,6 +88,8 @@ jobs:
         run: |
           macos_app_version="$(python3 -c 'import pathlib,re; print(re.search(r"^version:\s*([^+\s]+)", pathlib.Path("pubspec.yaml").read_text(), re.M).group(1))')"
           flutter build macos --release --dart-define="NAGA_VERSION=${macos_app_version}"
+      - name: Inspect application metadata, signatures and ARM64 dependencies
+        run: python3 ../scripts/macos/check-app.py 'build/macos/Build/Products/Release/Naga Network.app' --report ../build/macos-app-inspection.json
       - name: Preserve app bundle metadata in zip
         run: |
           mkdir -p ../build
@@ -90,7 +97,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos-application-${{ github.run_number }}
-          path: build/macos-application.zip
+          path: |
+            build/macos-application.zip
+            build/macos-app-inspection.json
           retention-days: 14
 
   service-probe:

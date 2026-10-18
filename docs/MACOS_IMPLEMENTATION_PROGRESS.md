@@ -37,7 +37,7 @@
 
 Штатным Flutter 3.47.1 создан `app/macos`. Перенесены только macOS scaffold и запись платформы в Flutter metadata. Настроены macOS 14, ARM64, product name `Naga Network` и ad-hoc signing; App Sandbox отключён согласно принятой внешней архитектуре. Проверены синтаксис workflow, plist/entitlements и Python bootstrap.
 
-Release `.app` build, Dart analyzer и Flutter tests прошли на native macOS ARM64 runner. Внешний вид на M2 ещё не подтверждён; системный helper основного приложения и VPN не реализованы. Default scaffold icons будут заменены существующими бренд-ресурсами на этапе оформления runner. Инструкции для артефактов: [scripts/macos/README.md](../scripts/macos/README.md).
+Release `.app` build, Dart analyzer и Flutter tests прошли на native macOS ARM64 runner. Внутри скачанного bundle подтверждены bundle ID `eu.nagavpn.nagaNetwork`, версия `1.2.9`, build `14`, minimum OS `14.0` и thin Mach-O ARM64. Внешний вид на M2 ещё не подтверждён; системный helper основного приложения и VPN не реализованы. Иконки scaffold заменены растеризацией существующего `assets/brand/naga-mark-red.svg`; `MainMenu.xib` согласован с именем Swift-модуля. Для этих двух последних правок требуется следующий native build. Инструкции для артефактов: [scripts/macos/README.md](../scripts/macos/README.md).
 
 ## Подтверждённые native build proofs
 
@@ -54,6 +54,10 @@ Release `.app` build, Dart analyzer и Flutter tests прошли на native ma
 
 ## Прототип SMAppService
 
-Добавлены исходники отдельного пробника A/B и сборочный job: [native/macos/service-probe](../native/macos/service-probe), [build-service-probe.sh](../scripts/macos/build-service-probe.sh). Helper предоставляет только диагностический status. В CI выполняется локальный `--self-check` без регистрации; установка и XPC к root-процессу требуют ручной проверки M2 по [инструкции](MACOS_M2_SERVICE_PROBE.md). Компиляция нового пробника ещё ожидает отдельного CI run.
+Добавлены исходники отдельного пробника A/B и сборочный job: [native/macos/service-probe](../native/macos/service-probe), [build-service-probe.sh](../scripts/macos/build-service-probe.sh). Helper предоставляет только диагностический status. [Native job 117707484054](https://github.com/frithTK/Naga-Network-App/actions/runs/39138371628/job/117707484054) прошёл: обе версии скомпилированы, проверены `codesign --verify --deep --strict` и локальный `--self-check` без регистрации. Скачанный [артефакт A/B](https://github.com/frithTK/Naga-Network-App/actions/runs/39138371628/artifacts/12140592911) проверен локально: SHA-256 совпадают, app/helper — ARM64, минимальная ОС 14, версии 0.0.1/0.0.2. Установка и XPC к root-процессу требуют ручной проверки M2 по [инструкции](MACOS_M2_SERVICE_PROBE.md).
+
+**M00.04.01/.02 PASS для реализации пробника.** **M00.07.01 PARTIAL:** A/B собраны и сохранены; состояние установленной A пока не проверено. Проверки системного разрешения, перезагрузки, удаления регистрации и замены A/B остаются открытыми. Подписанная Apple identity ветвь не проверена. Наличие ad-hoc подписи и успешная компиляция не доказывают возможность регистрации daemon.
 
 В UI macOS определяется отдельно от Linux. Updater выбирает имя ARM64 DMG и исключает установку до реализации macOS lifecycle: Linux installer не запускается, VPN не отключается. Это подготовка M07.06, а не готовый механизм обновления.
+
+Локально прошли 19 updater tests и Dart analyzer. Два новых сценария проверяют выбор DMG даже при оставшемся `APPIMAGE` и отказ установки до скачивания, создания staging, запуска процесса и отключения VPN.
