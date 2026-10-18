@@ -18,9 +18,9 @@
 
 - **M00.01.01 PASS:** сохранены локальная история, refs и изменённые/untracked документы.
 - **M00.01.02 PASS:** получена актуальная `origin/main`, создана отдельная ветка, документы сохранены.
-- **M00.01.03 TODO:** записаны инструменты Linux; версии macOS/Xcode предоставит native job и пользовательский M2.
+- **M00.01.03 PARTIAL:** записаны инструменты Linux и CI: macOS 14.8.9 (23J631), Xcode 15.4 (15F31d); версия пользовательского M2 ожидается.
 - **M00.01.04 PASS:** доступность Linux/Actions/ручного M2 и недостающих signing inputs зафиксирована.
-- **M00.01.05 TODO:** реализован bootstrap workflow; результат первого remote run будет добавлен отдельно.
+- **M00.01.05 PASS:** [bootstrap run 39137379893](https://github.com/frithTK/Naga-Network-App/actions/runs/39137379893), commit `5bf9d53b4f9a8650620983572006881e12ba6c7f`: все пять jobs завершились успешно. Общие [Quality checks](https://github.com/frithTK/Naga-Network-App/actions/runs/39137379808) также прошли.
 
 ## Локальные ARM64 build proofs
 
@@ -37,4 +37,23 @@
 
 Штатным Flutter 3.47.1 создан `app/macos`. Перенесены только macOS scaffold и запись платформы в Flutter metadata. Настроены macOS 14, ARM64, product name `Naga Network` и ad-hoc signing; App Sandbox отключён согласно принятой внешней архитектуре. Проверены синтаксис workflow, plist/entitlements и Python bootstrap.
 
-Native `.app` build и внешний вид на M2 ещё не подтверждены; системный helper и VPN не реализованы. Default scaffold icons будут заменены существующими бренд-ресурсами на этапе оформления runner. Инструкции для артефактов: [scripts/macos/README.md](../scripts/macos/README.md).
+Release `.app` build, Dart analyzer и Flutter tests прошли на native macOS ARM64 runner. Внешний вид на M2 ещё не подтверждён; системный helper основного приложения и VPN не реализованы. Default scaffold icons будут заменены существующими бренд-ресурсами на этапе оформления runner. Инструкции для артефактов: [scripts/macos/README.md](../scripts/macos/README.md).
+
+## Подтверждённые native build proofs
+
+В run 39137379893 все четыре компонента собраны как thin Mach-O ARM64 и выполнены на native runner. Скачанные manifests проверены локально; исходники чистые, Go 1.27.2, версия приложения 1.2.9.
+
+| Компонент | Сборка | Native CLI smoke | Ограничение |
+|---|---|---|---|
+| naga-control | PASS | PASS: `-help` | Backend ещё не встроен в `.app` |
+| sing-box 1.13.20 | PASS | PASS: `version`, `check` | Без TUN и VPN-профиля |
+| olcRTC | PASS | PASS: ожидаемый usage | Реальная сессия не проверена |
+| hev | PASS | PASS: зависимости и usage/version | Системный туннель не проверен |
+
+**M00.02.01/.02 PASS.** Остальные подшаги M00.02 остаются частичными до проверки runtime-конфигурации hev, полного manifest окружения/зависимостей и интеграционных сценариев. Успешный CLI smoke не подтверждает VPN datapath; во всех manifests `vpn_device_acceptance` остаётся `UNAVAILABLE`.
+
+## Прототип SMAppService
+
+Добавлены исходники отдельного пробника A/B и сборочный job: [native/macos/service-probe](../native/macos/service-probe), [build-service-probe.sh](../scripts/macos/build-service-probe.sh). Helper предоставляет только диагностический status. В CI выполняется локальный `--self-check` без регистрации; установка и XPC к root-процессу требуют ручной проверки M2 по [инструкции](MACOS_M2_SERVICE_PROBE.md). Компиляция нового пробника ещё ожидает отдельного CI run.
+
+В UI macOS определяется отдельно от Linux. Updater выбирает имя ARM64 DMG и исключает установку до реализации macOS lifecycle: Linux installer не запускается, VPN не отключается. Это подготовка M07.06, а не готовый механизм обновления.

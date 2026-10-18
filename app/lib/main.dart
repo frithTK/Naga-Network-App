@@ -105,6 +105,7 @@ String get nagaAppPlatform {
   if (nagaUsesWindowsChrome) return 'windows';
   if (nagaRunsOnAndroid) return 'android';
   if (nagaRunsOnIOS) return 'ios';
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.macOS) return 'macos';
   return 'linux';
 }
 
@@ -7311,13 +7312,16 @@ class _AppUpdateTile extends StatelessWidget {
     final canInstall =
         check?.newerAvailable == true &&
         (check?.missingAssets.isEmpty ?? false) &&
-        kind != UpdateInstallKind.linuxDev;
+        kind != UpdateInstallKind.linuxDev &&
+        kind != UpdateInstallKind.macos;
     String detail = 'Текущая версия $uiVersion';
     if (behind) {
       detail =
           'Приложение $uiVersion, control-plane $controlVersion — обновите runtime';
     } else if (kind == UpdateInstallKind.linuxDev) {
       detail = 'Проверка доступна. Установка — только из AppImage.';
+    } else if (kind == UpdateInstallKind.macos) {
+      detail = 'Проверка доступна. Обновление macOS устанавливается из DMG.';
     }
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),

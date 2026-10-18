@@ -84,6 +84,67 @@ void main() {
     );
   });
 
+  test('macOS selects ARM64 DMG even with a stale APPIMAGE environment', () {
+    final kind = detectInstallKind(
+      isLinux: false,
+      isWindows: false,
+      isAndroid: false,
+      isMacOS: true,
+      environment: const {'APPIMAGE': '/tmp/old-linux.AppImage'},
+    );
+    expect(kind, UpdateInstallKind.macos);
+    expect(requiredAssetNames(kind, '1.2.5'), [
+      'NagaNetwork-1.2.5-macos-arm64.dmg',
+    ]);
+    expect(
+      canAutoApplyUpdate(
+        result: const UpdateCheckResult(
+          currentVersion: '1.2.4',
+          latestVersion: '1.2.5',
+          newerAvailable: true,
+        ),
+        kind: kind,
+        autoInstall: true,
+      ),
+      isFalse,
+    );
+  });
+
+  test('macOS updater refuses installation before any side effects', () async {
+    final updater = AppUpdater(
+      currentVersion: '1.2.4',
+      kind: UpdateInstallKind.macos,
+      tempDirectory: () => throw StateError('Unexpected staging directory'),
+      client: MockClient((_) => throw StateError('Unexpected download')),
+      runProcess: (_, _) => throw StateError('Unexpected installer process'),
+    );
+    addTearDown(updater.close);
+    final manualInstall = throwsA(
+      isA<AppUpdateException>().having(
+        (error) => error.message,
+        'message',
+        contains('DMG'),
+      ),
+    );
+    await expectLater(
+      updater.downloadRequired(
+        GithubRelease.fromJson({'tag_name': 'v1.2.5', 'assets': []}),
+        '1.2.5',
+      ),
+      manualInstall,
+    );
+    await expectLater(
+      updater.applyDownloaded(
+        [],
+        version: '1.2.5',
+        disconnectIfNeeded: () => throw StateError('Unexpected VPN disconnect'),
+        waitForControlVersion: (_) =>
+            throw StateError('Unexpected backend wait'),
+      ),
+      manualInstall,
+    );
+  });
+
   test('checkLatest sends User-Agent and finds a newer release', () async {
     final updater = AppUpdater(
       currentVersion: '1.2.4',

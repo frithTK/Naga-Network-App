@@ -12,6 +12,7 @@ on:
       - 'cmd/**'
       - 'core/**'
       - 'app/**'
+      - 'native/macos/**'
   workflow_dispatch:
 
 permissions:
@@ -90,4 +91,23 @@ jobs:
         with:
           name: macos-application-${{ github.run_number }}
           path: build/macos-application.zip
+          retention-days: 14
+
+  service-probe:
+    name: ServiceManagement diagnostic prototypes A and B
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and ad-hoc sign both diagnostic versions
+        run: |
+          bash scripts/macos/build-service-probe.sh A
+          bash scripts/macos/build-service-probe.sh B
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-service-probe-${{ github.run_number }}
+          path: |
+            build/macos-service-probe/**/*.zip
+            build/macos-service-probe/**/SHA256SUMS.txt
+          if-no-files-found: error
           retention-days: 14
