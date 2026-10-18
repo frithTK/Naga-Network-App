@@ -1,6 +1,6 @@
 # macOS ARM64: bootstrap
 
-Первый этап проверяет сборку закреплённых компонентов и запуск CLI на macOS. Основной план: [MACOS_DEVELOPMENT_PLAN.md](../../docs/MACOS_DEVELOPMENT_PLAN.md).
+Текущий этап включает `.app` со встроенным пользовательским backend, тестовый DMG, сборку закреплённых компонентов и отдельный diagnostic service probe. Основной план: [MACOS_DEVELOPMENT_PLAN.md](../../docs/MACOS_DEVELOPMENT_PLAN.md).
 
 ```sh
 python3 scripts/macos/bootstrap.py --component all
@@ -35,6 +35,8 @@ bash scripts/macos/build-service-probe.sh B
 Сборка требует macOS с Xcode. Получаются два ad-hoc приложения с отдельным bundle ID `eu.nagavpn.nagaNetwork.ServiceProbe`; версии A/B используют protocol 1/2. CI проверяет компиляцию, подпись и локальный ответ helper без регистрации службы. Установка через `SMAppService`, системное разрешение, XPC с UID 0, reboot и замена проверяются вручную по [инструкции M2](../../docs/MACOS_M2_SERVICE_PROBE.md).
 
 Иконки macOS получены из существующего `assets/brand/naga-mark-red.svg`. Для повторного экспорта нужен `rsvg-convert`: `bash scripts/macos/generate-icons.sh`. Сборка Xcode использует уже сохранённые PNG и не требует librsvg.
+
+Проверенный пакет: [macos-application-7](https://github.com/frithTK/Naga-Network-App/actions/runs/39150715018/artifacts/12145013532), source `87bcd7b5fd66cb58cc8ff64417356ebac4acb7f9`. Внешний Actions ZIP содержит каталог `macos-dmg` с образом и SHA256SUMS. Общая native проверка: [run 39150715018](https://github.com/frithTK/Naga-Network-App/actions/runs/39150715018).
 
 ## Приложение с пользовательским backend
 
