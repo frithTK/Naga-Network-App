@@ -1,0 +1,93 @@
+name: macOS ARM64 bootstrap
+
+on:
+  push:
+    branches: ['feat/macos-*']
+    paths:
+      - '.github/workflows/macos-bootstrap.yml'
+      - 'scripts/macos/**'
+      - 'scripts/runtime/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'cmd/**'
+      - 'core/**'
+      - 'app/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: Native ARM64 ${{ matrix.component }}
+    runs-on: macos-14
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [naga-control, sing-box, olcrtc, hev-socks5-tunnel]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Record runner and verify ARM64 host
+        run: |
+          uname -sm
+          test "$(uname -m)" = arm64
+          sw_vers
+          xcodebuild -version
+          go version
+      - name: Build and inspect component
+        run: python3 scripts/macos/bootstrap.py --component '${{ matrix.component }}'
+      - name: Save proof artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-${{ matrix.component }}-${{ github.run_number }}
+          path: |
+            build/macos-bootstrap/**/manifest.json
+            build/macos-bootstrap/**/naga-control/naga-control
+            build/macos-bootstrap/**/sing-box/sing-box
+            build/macos-bootstrap/**/olcrtc/olcrtc
+            build/macos-bootstrap/**/hev-socks5-tunnel/hev-socks5-tunnel
+            build/macos-bootstrap/**/LICENSE.*
+            build/macos-bootstrap/**/go-build-info.txt
+            build/macos-bootstrap/**/*.log
+          if-no-files-found: error
+          retention-days: 14
+
+  flutter:
+    name: Flutter macOS application
+    runs-on: macos-14
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.1'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart analyze
+      - run: flutter test --reporter expanded
+      - name: Build ad-hoc application scaffold
+        run: |
+          macos_app_version="$(python3 -c 'import pathlib,re; print(re.search(r"^version:\s*([^+\s]+)", pathlib.Path("pubspec.yaml").read_text(), re.M).group(1))')"
+          flutter build macos --release --dart-define="NAGA_VERSION=${macos_app_version}"
+      - name: Preserve app bundle metadata in zip
+        run: |
+          mkdir -p ../build
+          ditto -c -k --sequesterRsrc --keepParent 'build/macos/Build/Products/Release/Naga Network.app' ../build/macos-application.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-application-${{ github.run_number }}
+          path: build/macos-application.zip
+          retention-days: 14

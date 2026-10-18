@@ -1,0 +1,26 @@
+{
+  "sing-box": {
+    "url": "https://github.com/SagerNet/sing-box.git",
+    "commit": "56f91dfeabd6f4edbd437dfcc1e5b0ebc856b778",
+    "version": "1.13.20",
+    "license": "LICENSE"
+  },
+  "olcrtc": {
+    "url": "https://github.com/ghostlane-project/olcrtc.git",
+    "commit": "7f849e08022ac4ce6dcdb1a49ad5560446daca1f",
+    "license": "LICENSE",
+    "dependency_fixes": {
+      "golang.org/x/net": "v0.60.0",
+      "golang.org/x/crypto": "v0.57.0",
+      "golang.org/x/text": "v0.42.0",
+      "github.com/klauspost/compress": "v1.18.7",
+      "google.golang.org/grpc": "v1.83.2",
+      "github.com/google/cel-go": "v0.30.0"
+    }
+  },
+  "hev-socks5-tunnel": {
+    "url": "https://github.com/heiher/hev-socks5-tunnel.git",
+    "commit": "dec294e1402ebb0b2d78d1f6efebaba81511e960",
+    "license": "License"
+  }
+}
