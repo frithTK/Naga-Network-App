@@ -33,9 +33,13 @@ jobs:
         component: [naga-control, sing-box, olcrtc, hev-socks5-tunnel]
     steps:
       - uses: actions/checkout@v4
+      - name: Read pinned Go toolchain
+        id: toolchain
+        run: |
+          python3 -c 'import pathlib,re; print("version=" + re.search(r"^toolchain\s+go(\S+)", pathlib.Path("go.mod").read_text(), re.M).group(1))' >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.toolchain.outputs.version }}
       - name: Record runner and verify ARM64 host
         run: |
           uname -sm
@@ -43,13 +47,13 @@ jobs:
           sw_vers
           xcodebuild -version
           go version
+      - name: Build and inspect component
+        run: python3 scripts/macos/bootstrap.py --component '${{ matrix.component }}'
       - name: Native macOS Go tests and vet
         if: matrix.component == 'naga-control'
         run: |
           go test -timeout=180s ./...
           go vet ./...
-      - name: Build and inspect component
-        run: python3 scripts/macos/bootstrap.py --component '${{ matrix.component }}'
       - name: Save proof artifact
         if: always()
         uses: actions/upload-artifact@v4

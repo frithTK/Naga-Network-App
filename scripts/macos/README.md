@@ -12,6 +12,8 @@ python3 scripts/macos/bootstrap.py --component all
 
 Workflow [macos-bootstrap.yml](../../.github/workflows/macos-bootstrap.yml) запускает независимые native jobs для четырёх компонентов и собирает Flutter `.app`. macOS runner пока является каркасом приложения; установка helper и полноценный VPN относятся к следующим задачам плана.
 
+Native CI также запускает Go tests/vet и проверяет готовый `.app` через `check-app.py`: версии из pubspec, deployment target, strict code signature, отсутствие App Sandbox, ARM64 и динамические зависимости. Отчёт `macos-app-inspection.json` сохраняется вместе с ZIP приложения.
+
 Для ручной проверки артефакта приложения на M2:
 
 1. Скачать ZIP из завершившегося Actions run и распаковать его штатным архиватором.

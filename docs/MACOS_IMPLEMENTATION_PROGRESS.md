@@ -37,7 +37,7 @@
 
 Штатным Flutter 3.47.1 создан `app/macos`. Перенесены только macOS scaffold и запись платформы в Flutter metadata. Настроены macOS 14, ARM64, product name `Naga Network` и ad-hoc signing; App Sandbox отключён согласно принятой внешней архитектуре. Проверены синтаксис workflow, plist/entitlements и Python bootstrap.
 
-Release `.app` build, Dart analyzer и Flutter tests прошли на native macOS ARM64 runner. Внутри скачанного bundle подтверждены bundle ID `eu.nagavpn.nagaNetwork`, версия `1.2.9`, build `14`, minimum OS `14.0` и thin Mach-O ARM64. Внешний вид на M2 ещё не подтверждён; системный helper основного приложения и VPN не реализованы. Иконки scaffold заменены растеризацией существующего `assets/brand/naga-mark-red.svg`; `MainMenu.xib` согласован с именем Swift-модуля. Для этих двух последних правок требуется следующий native build. Инструкции для артефактов: [scripts/macos/README.md](../scripts/macos/README.md).
+Release `.app` build, Dart analyzer и Flutter tests прошли на native macOS ARM64 runner. Внутри скачанного bundle подтверждены bundle ID `eu.nagavpn.nagaNetwork`, версия `1.2.9`, build `14`, minimum OS `14.0` и thin Mach-O ARM64. Внешний вид на M2 ещё не подтверждён; системный helper основного приложения и VPN не реализованы. Иконки scaffold заменены растеризацией существующего `assets/brand/naga-mark-red.svg`; `MainMenu.xib` согласован с именем Swift-модуля. Эти изменения прошли [native build и проверку bundle](https://github.com/frithTK/Naga-Network-App/actions/runs/39138706941/job/117708457962): `check-app.py` сверяет версии с pubspec, strict codesign, отсутствие App Sandbox, ARM64 slice каждого Mach-O и отсутствие абсолютных зависимостей вне системных каталогов. Инструкции для артефактов: [scripts/macos/README.md](../scripts/macos/README.md).
 
 ## Подтверждённые native build proofs
 
@@ -61,3 +61,7 @@ Release `.app` build, Dart analyzer и Flutter tests прошли на native ma
 В UI macOS определяется отдельно от Linux. Updater выбирает имя ARM64 DMG и исключает установку до реализации macOS lifecycle: Linux installer не запускается, VPN не отключается. Это подготовка M07.06, а не готовый механизм обновления.
 
 Локально прошли 19 updater tests и Dart analyzer. Два новых сценария проверяют выбор DMG даже при оставшемся `APPIMAGE` и отказ установки до скачивания, создания staging, запуска процесса и отключения VPN.
+
+## Нативные Go tests
+
+Первый полный macOS-прогон выявил две платформенные ошибки тестов: проверка olcRTC ожидала Linux routing на неподдерживаемой Darwin-платформе, а проверка рабочего каталога sing-box сравнивала строки путей через `/var` и `/private/var`. Для первой явно ограничены поддерживаемые платформы Linux/Windows; для второй директории сравниваются через `os.SameFile`. Сами проверки rollback и размещения временного config сохранены. Локально изменённые пакеты `core/control` и `core/engine/singbox` проходят; повтор native tests/vet ожидается. Сборочный proof выполняется перед тестами, чтобы оставлять артефакт и при тестовой ошибке.
