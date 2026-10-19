@@ -6,6 +6,10 @@
 Ранее опубликованный `check1` содержит только диагностическую службу и не включает VPN.
 Основной план: [MACOS_DEVELOPMENT_PLAN.md](../../docs/MACOS_DEVELOPMENT_PLAN.md).
 
+Пакет для первой проверки TUN: [DMG `vpn1`](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-vpn1/NagaNetwork-1.2.9-macos-arm64.dmg),
+source `a157c952936171585a56220e23ab3a05bf46ff24`, [native CI PASS](https://github.com/frithTK/Naga-Network-App/actions/runs/39240394882).
+Сценарий физической проверки приведён в [MACOS_VPN_TEST.md](../../docs/MACOS_VPN_TEST.md).
+
 ```sh
 python3 scripts/macos/bootstrap.py --component all
 ```
@@ -21,7 +25,9 @@ VPN helper и отдельным diagnostic helper. Validator проверяет
 
 Native CI также запускает Go tests/vet и проверяет готовый `.app` через `check-app.py`: версии из pubspec, deployment target, strict code signature, отсутствие App Sandbox, ARM64 и динамические зависимости. Отчёт `macos-app-inspection.json` сохраняется вместе с ZIP приложения.
 
-Для обычной ручной проверки M2 достаточно [быстрой инструкции](../../docs/MACOS_QUICK_CHECK.md): установить DMG → «Проверить Mac» → разрешить фоновую службу, если macOS попросит → скопировать отчёт. Регистрация, XPC и удаление выполняются приложением. A/B, Терминал и перезагрузка не требуются.
+Для подключения TUN используйте [первую проверку VPN](../../docs/MACOS_VPN_TEST.md).
+Отдельная [быстрая диагностика](../../docs/MACOS_QUICK_CHECK.md) проверяет регистрацию/XPC/удаление
+status-only службы через кнопку «Проверить Mac». A/B, Терминал и перезагрузка для неё не нужны.
 
 Дополнительные инженерные проверки приложения на M2:
 

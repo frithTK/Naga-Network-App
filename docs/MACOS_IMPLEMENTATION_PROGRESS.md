@@ -156,3 +156,33 @@ PASS без root и сетевых изменений. Darwin ARM64 backend и G
 Это прототип для [первой проверки VPN](MACOS_VPN_TEST.md), а не закрытые M03/M04/M08.
 VPN на M2 пока не проверен. Persistent recovery, системный proxy, network change,
 sleep/wake и замена зарегистрированного VPN helper остаются открытыми.
+
+## Проверенный прототип VPN `vpn1`
+
+Source `a157c952936171585a56220e23ab3a05bf46ff24`, [native run 39240394882](https://github.com/frithTK/Naga-Network-App/actions/runs/39240394882):
+все шесть jobs **PASS**, оба общих Quality checks **PASS**. На macOS прошли Go tests/vet,
+24 проверки Swift validator, полная Swift SDK typecheck bridge/helper, ограничения
+privileged API и `sing-box check` именно helper-prepared TUN config без старта сети.
+Приложение собрано, проверены восемь Mach-O, обе daemon plist, лицензия, engine SHA/CDHash,
+подписи, packaged backend и фактический GUI launch/quit. DMG прошёл read-only mount
+с повторной проверкой состава/подписей/встроенного backend и отмонтированием.
+
+Первый native run выявил два теста с `/bin/sh`, направлявшихся в bridge, и две ошибки
+Swift SDK/type inference. Исправлены сохранение user-mode custom Args, применение
+`kSecCSStrictValidate` и явное преобразование utun strings. Cleanup хранит только
+успешно добавленные маршруты и индекс созданного интерфейса, чтобы не затронуть
+чужой интерфейс при повторном использовании имени utun.
+
+Скачанный пакет проверен локально: DMG checksum совпадает с SHA256SUMS и native report;
+source commit, внутренний manifest, engine digest и ARM64 всех пяти helpers совпадают.
+GUI report подтверждает окно, стабильный запуск, штатное завершение и остановку backend.
+
+[Экспериментальный релиз `macos-dev-1.2.9-vpn1`](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-vpn1),
+[прямой DMG](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-vpn1/NagaNetwork-1.2.9-macos-arm64.dmg).
+Размер: **42 291 231** байт; SHA-256 `d83cf1c6a0bf41e7c102028406767d7b40bb03d136f9d245dd828fb7f406a35b`.
+Стабильный Latest остаётся `v1.2.9`. Это отдельный development pre-release для M00.03/M00.05.
+
+**Физическая VPN-проверка остаётся открытой:** реальный connect/traffic/stop на M2,
+TCP/UDP/DNS/IPv6, восстановление сети, crash/reboot/sleep/wake и upgrade не подтверждены.
+Ad-hoc distribution assessment остаётся `REJECTED`; Apple notarization отсутствует.
+Успешный root status диагностической службы не заменяет эти проверки.

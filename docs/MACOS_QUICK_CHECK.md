@@ -2,6 +2,9 @@
 
 Требуется Mac с Apple Silicon (включая M2) и macOS 14 или новее.
 
+Для первой проверки **подключения VPN** используйте [новую экспериментальную сборку
+и отдельный сценарий](MACOS_VPN_TEST.md). Ниже описана прежняя status-only диагностика.
+
 [Скачать DMG](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-check1/NagaNetwork-1.2.9-macos-arm64.dmg) · [Файлы сборки и checksum](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-check1). Вход в GitHub не нужен. Проверенный source commit: `6f4e2bf382d2d21d293e0cb2b6de5d9abc233506`.
 
 1. Откройте ссылку скачивания в **Safari или Chrome** и скачайте DMG. Для передачи сборки другому проверяющему отправьте ссылку на релиз.

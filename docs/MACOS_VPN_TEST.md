@@ -1,5 +1,10 @@
 # Первая проверка VPN на Mac
 
+[Скачать экспериментальный DMG](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-vpn1/NagaNetwork-1.2.9-macos-arm64.dmg)
+· [Файлы сборки и SHA256SUMS](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-vpn1).
+Вход в GitHub не нужен. Source: `a157c952936171585a56220e23ab3a05bf46ff24`;
+[native build/GUI/DMG checks](https://github.com/frithTK/Naga-Network-App/actions/runs/39240394882) прошли.
+
 Экспериментальный этап M00.03/M00.05: приложение соединяет пользовательский backend
 с root-службой и закреплённым sing-box. Успешная сборка не подтверждает передачу
 трафика. Проверка на физическом Mac остаётся обязательной.
