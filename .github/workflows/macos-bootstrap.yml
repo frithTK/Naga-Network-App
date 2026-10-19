@@ -15,6 +15,15 @@ on:
       - 'native/macos/**'
       - 'packaging/macos/**'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional published prerelease to diagnose instead of rebuilding'
+        type: string
+        default: ''
+      release_sha256:
+        description: 'Required SHA-256 when release_tag is set'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -25,6 +34,7 @@ concurrency:
 
 jobs:
   runtime:
+    if: ${{ !inputs.release_tag }}
     name: Native ARM64 ${{ matrix.component }}
     runs-on: macos-14
     timeout-minutes: 35
@@ -73,6 +83,7 @@ jobs:
           retention-days: 14
 
   flutter:
+    if: ${{ !inputs.release_tag }}
     name: Flutter macOS application
     runs-on: macos-14
     timeout-minutes: 35
@@ -103,6 +114,8 @@ jobs:
         run: python3 ../scripts/macos/check-app.py 'build/macos/Build/Products/Release/Naga Network.app' --report ../build/macos-app-inspection.json
       - name: Exercise packaged backend without VPN
         run: python3 ../scripts/macos/test-app-session.py 'build/macos/Build/Products/Release/Naga Network.app'
+      - name: Open actual GUI through LaunchServices
+        run: swift ../scripts/macos/test-gui-launch.swift 'build/macos/Build/Products/Release/Naga Network.app' ../build/macos-gui-launch.json
       - name: Build and verify development DMG
         run: |
           bash ../scripts/macos/build-dmg.sh
@@ -118,12 +131,14 @@ jobs:
           path: |
             build/macos-application.zip
             build/macos-app-inspection.json
+            build/macos-gui-launch.json
             build/macos-dmg/*.dmg
             build/macos-dmg/SHA256SUMS.txt
             build/macos-dmg/dmg-inspection.json
           retention-days: 14
 
   service-probe:
+    if: ${{ !inputs.release_tag }}
     name: ServiceManagement diagnostic prototypes A and B
     runs-on: macos-14
     timeout-minutes: 10
@@ -140,4 +155,41 @@ jobs:
             build/macos-service-probe/**/*.zip
             build/macos-service-probe/**/SHA256SUMS.txt
           if-no-files-found: error
+          retention-days: 14
+
+  release-launch:
+    if: ${{ inputs.release_tag != '' }}
+    name: Published GUI launch on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download exact published development DMG
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_SHA256: ${{ inputs.release_sha256 }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess
+          from pathlib import Path
+          tag = os.environ['RELEASE_TAG']
+          digest = os.environ['RELEASE_SHA256']
+          assert re.fullmatch(r'macos-dev-[A-Za-z0-9._-]+', tag)
+          assert re.fullmatch(r'[a-f0-9]{64}', digest)
+          Path('build').mkdir(exist_ok=True)
+          url = f'https://github.com/frithTK/Naga-Network-App/releases/download/{tag}/NagaNetwork-1.2.9-macos-arm64.dmg'
+          subprocess.run(['curl', '-fL', '--retry', '2', '-o', 'build/published.dmg', url], check=True)
+          subprocess.run(['python3', 'scripts/macos/test-release-launch.py', 'build/published.dmg',
+                          '--sha256', digest, '--output', 'build/release-launch'], check=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-release-launch-${{ matrix.os }}-${{ github.run_number }}
+          path: build/release-launch/
+          if-no-files-found: warn
           retention-days: 14
