@@ -55,7 +55,8 @@ final class VPNSession {
       return owner == connection && session == id ? response() : response(false, message: "VPN уже занят другой сессией Naga")
     }
     do {
-      guard let name = (123...254).map({ "utun\($0)" }).first(where: { if_nametoindex($0) == 0 }) else { throw VPNFailure("Нет свободного VPN-интерфейса") }
+      let candidates: [String] = (123...254).map { "utun\($0)" }
+      guard let name = candidates.first(where: { name in name.withCString { if_nametoindex($0) == 0 } }) else { throw VPNFailure("Нет свободного VPN-интерфейса") }
       let config = try VPNConfig.prepare(data, interface: name)
       try secureDirectory(root)
       let engine = try snapshotEngine()
