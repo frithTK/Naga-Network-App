@@ -43,9 +43,9 @@ def main():
         }, indent=2) + '\n')
         result = subprocess.run(['swift', str(ROOT / 'scripts/macos/test-gui-launch.swift'),
                                  str(app), str(output / 'gui-launch.json')], timeout=100)
-        if result.returncode:
+        if result.returncode or policy.returncode:
             logs = subprocess.run(['log', 'show', '--last', '2m', '--style', 'compact', '--predicate',
-                                   'process == "Naga Network" OR process == "syspolicyd" OR process == "amfid" OR process == "XprotectService"'],
+                                   'process == "Naga Network" OR process == "syspolicyd" OR process == "amfid" OR subsystem == "com.apple.xprotect"'],
                                   capture_output=True, text=True, timeout=20)
             (output / 'launch-failure.log').write_text((logs.stdout + logs.stderr)[-50000:])
         raise SystemExit(result.returncode)

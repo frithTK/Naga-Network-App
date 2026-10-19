@@ -9,12 +9,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from bundle_paths import MACHO_MAGICS, resolve_rpath, rpaths
+
 ROOT = Path(__file__).resolve().parents[2]
-MACHO_MAGICS = {
-    bytes.fromhex(value) for value in
-    ('feedface', 'cefaedfe', 'feedfacf', 'cffaedfe',
-     'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca')
-}
 
 
 def output(*command):
@@ -64,6 +61,12 @@ def inspect(bundle):
             raise RuntimeError(f'no ARM64 slice: {path}')
         if path == executable and architectures != ['arm64']:
             raise RuntimeError(f'main executable is not native ARM64 only: {architectures}')
+        if path.stat().st_mode & 0o111 != 0o111:
+            raise RuntimeError(f'Mach-O lacks executable permissions: {path}')
+        search_paths = rpaths(path)
+        for value in search_paths:
+            if resolve_rpath(value, path, executable, bundle) is None:
+                raise RuntimeError(f'nonportable LC_RPATH in {path}: {value}')
         subprocess.run(['codesign', '--verify', '--strict', str(path)], check=True)
         dependencies = []
         for line in output('otool', '-arch', 'arm64', '-L', str(path)).splitlines()[1:]:
@@ -73,12 +76,22 @@ def inspect(bundle):
                 raise RuntimeError(f'non-system absolute dependency in {path}: {name}')
             dependencies.append(name)
         code.append({'path': str(path.relative_to(bundle)),
-                     'architectures': architectures, 'dependencies': dependencies})
+                     'architectures': architectures, 'dependencies': dependencies,
+                     'rpaths': search_paths})
     if not any(item['path'] == str(executable.relative_to(bundle)) for item in code):
         raise RuntimeError('main Mach-O executable not found')
+    # Static signature validity and an unquarantined launch do not establish
+    # browser-download acceptance. Keep the actual OS distribution verdict.
+    policy = subprocess.run(['syspolicy_check', 'distribution', str(bundle)],
+                            capture_output=True, text=True, timeout=60)
     return {'schema_version': 1, 'source_commit': output('git', '-C', str(ROOT), 'rev-parse', 'HEAD'),
             'bundle': expected, 'code': code, 'signature_verification': 'PASS',
-            'app_sandbox': False, 'vpn_device_acceptance': 'UNAVAILABLE'}
+            'app_sandbox': False, 'vpn_device_acceptance': 'UNAVAILABLE',
+            'distribution_assessment': {
+                'result': 'PASS' if policy.returncode == 0 else 'REJECTED',
+                'returncode': policy.returncode,
+                'output': policy.stdout + policy.stderr,
+            }}
 
 
 def main():

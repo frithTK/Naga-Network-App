@@ -36,6 +36,7 @@ directory.mkdir(parents=True, exist_ok=True)
     'MachServices': {identifier: True},
 }))
 PY
+python3 "${project_dir}/scripts/macos/prepare-app.py" "${bundle}"
 codesign --force --sign - --identifier eu.nagavpn.nagaNetwork.Control "${bundle}/Contents/Helpers/naga-control"
 codesign --force --sign - --identifier eu.nagavpn.nagaNetwork.DiagnosticHelper "${bundle}/Contents/Helpers/NagaDiagnosticHelper"
 codesign --force --sign - --entitlements macos/Runner/Release.entitlements "${bundle}"

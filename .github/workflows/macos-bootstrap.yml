@@ -29,7 +29,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-bootstrap-${{ github.ref }}
+  group: macos-bootstrap-${{ github.ref }}-${{ inputs.release_tag || 'build' }}
   cancel-in-progress: true
 
 jobs:
@@ -58,6 +58,9 @@ jobs:
           sw_vers
           xcodebuild -version
           go version
+      - name: Portable macOS bundle path regression tests
+        if: matrix.component == 'naga-control'
+        run: python3 -m unittest discover -s scripts/macos/tests -v
       - name: Build and inspect component
         run: python3 scripts/macos/bootstrap.py --component '${{ matrix.component }}'
       - name: Native macOS Go tests and vet
