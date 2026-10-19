@@ -26,7 +26,7 @@ Load command 2
 
     def test_actual_framework_paths_reject_external_missing_and_symlink_escape(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            root = Path(temp).resolve()
             app = root / 'Naga Network.app'
             executable = app / 'Contents/MacOS/Naga Network'
             framework = app / 'Contents/Frameworks/FlutterMacOS.framework/Versions/A/FlutterMacOS'
