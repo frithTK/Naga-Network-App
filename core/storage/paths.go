@@ -27,6 +27,13 @@ func DefaultRoot() (string, error) {
 		}
 		return filepath.Join(base, appDataDirName), nil
 	}
+	if runtime.GOOS == "darwin" {
+		base, err := os.UserConfigDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve macOS application support directory: %w", err)
+		}
+		return filepath.Join(base, "Naga Network"), nil
+	}
 	base := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
 	if base == "" {
 		userHome, err := os.UserHomeDir()

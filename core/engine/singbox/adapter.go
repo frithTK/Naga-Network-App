@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,12 @@ func (a Adapter) Validate(ctx context.Context, config []byte) error {
 	normalized, err := NormalizeLinuxConfig(config)
 	if err != nil {
 		return err
+	}
+	if runtime.GOOS == "darwin" {
+		normalized, err = adaptTUNForPlatform(normalized)
+		if err != nil {
+			return err
+		}
 	}
 	if err := profile.ValidateSingBoxConfig(normalized); err != nil {
 		return err

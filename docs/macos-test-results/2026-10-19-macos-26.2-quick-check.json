@@ -1,0 +1,45 @@
+{
+  "cleanup": {
+    "status": "pass",
+    "registration": "not_registered"
+  },
+  "schema_version": 1,
+  "diagnostic_version": "integrated-1",
+  "outcome": "pass",
+  "registration_before_cleanup": "enabled",
+  "system": {
+    "macos": "26.2.0",
+    "architecture": "arm64"
+  },
+  "app": {
+    "version": "1.2.9",
+    "build": "14"
+  },
+  "checks": [
+    {
+      "id": "installation",
+      "status": "pass"
+    },
+    {
+      "id": "user_process",
+      "status": "pass"
+    },
+    {
+      "id": "registration",
+      "status": "pass"
+    },
+    {
+      "id": "service_connection",
+      "status": "pass",
+      "effective_uid": 0,
+      "protocol_version": 1,
+      "helper_build": "integrated-1"
+    }
+  ],
+  "local_backend": {
+    "status": "pass",
+    "version": "1.2.9"
+  },
+  "overall_result": "pass",
+  "vpn_tested": false
+}

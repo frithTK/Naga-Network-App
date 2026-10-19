@@ -15,6 +15,11 @@ import (
 
 func TestMain(m *testing.M) {
 	if parent := os.Getenv("NAGA_TEST_CONFIG_CHECK_PARENT"); parent != "" {
+		sameDirectory := func(left, right string) bool {
+			leftInfo, leftErr := os.Stat(left)
+			rightInfo, rightErr := os.Stat(right)
+			return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
+		}
 		if len(os.Args) != 4 || os.Args[1] != "check" || os.Args[2] != "-c" {
 			fmt.Fprintln(os.Stderr, "unexpected config check arguments")
 			os.Exit(1)
@@ -22,8 +27,7 @@ func TestMain(m *testing.M) {
 		path := os.Args[3]
 		dir := filepath.Dir(path)
 		cwd, err := os.Getwd()
-		if err != nil || !strings.EqualFold(filepath.Clean(cwd), filepath.Clean(dir)) ||
-			!strings.EqualFold(filepath.Dir(dir), parent) {
+		if err != nil || !sameDirectory(cwd, dir) || !sameDirectory(filepath.Dir(dir), parent) {
 			fmt.Fprintln(os.Stderr, "config check did not use ConfigDir")
 			os.Exit(1)
 		}

@@ -90,6 +90,7 @@ enum UpdateInstallKind {
   windowsPortable,
   windowsSetup,
   android,
+  macos,
 }
 
 class ReleaseAsset {
@@ -178,6 +179,7 @@ String linuxAppImageName(String ver) => 'NagaNetwork-$ver-x86_64.AppImage';
 String windowsZipName(String ver) => 'NagaNetwork-$ver-windows-x64.zip';
 String windowsSetupName(String ver) => 'NagaNetwork-$ver-windows-x64-setup.exe';
 String androidApkName(String ver) => 'NagaNetwork-$ver-arm64-v8a.apk';
+String macosDmgName(String ver) => 'NagaNetwork-$ver-macos-arm64.dmg';
 
 List<String> requiredAssetNames(UpdateInstallKind kind, String ver) {
   switch (kind) {
@@ -191,6 +193,8 @@ List<String> requiredAssetNames(UpdateInstallKind kind, String ver) {
       return [windowsSetupName(ver)];
     case UpdateInstallKind.android:
       return [androidApkName(ver)];
+    case UpdateInstallKind.macos:
+      return [macosDmgName(ver)];
   }
 }
 
@@ -211,6 +215,7 @@ UpdateInstallKind detectInstallKind({
   bool? isLinux,
   bool? isWindows,
   bool? isAndroid,
+  bool? isMacOS,
 }) {
   final linux = isLinux ?? Platform.isLinux;
   final windows = isWindows ?? Platform.isWindows;
@@ -233,6 +238,7 @@ UpdateInstallKind detectInstallKind({
     if (appImage.isNotEmpty) return UpdateInstallKind.linuxAppImage;
     return UpdateInstallKind.linuxDev;
   }
+  if (isMacOS ?? Platform.isMacOS) return UpdateInstallKind.macos;
   return UpdateInstallKind.linuxDev;
 }
 
@@ -298,7 +304,8 @@ bool canAutoApplyUpdate({
   return autoInstall &&
       result.newerAvailable &&
       result.missingAssets.isEmpty &&
-      kind != UpdateInstallKind.linuxDev;
+      kind != UpdateInstallKind.linuxDev &&
+      kind != UpdateInstallKind.macos;
 }
 
 bool runningUnderFlutterTest([Map<String, String>? environment]) {
@@ -361,11 +368,15 @@ AppUpdatePrefs loadAppUpdatePrefs({
 }
 
 Future<String?> resolveAppUpdatePrefsPath({
+  String? dataDirectory,
   Map<String, String>? environment,
   bool? isWindows,
   bool? isAndroid,
   MethodChannel? channel,
 }) async {
+  if (dataDirectory != null && dataDirectory.isNotEmpty) {
+    return p.join(dataDirectory, 'app-update.json');
+  }
   final path = appUpdatePrefsPath(
     environment: environment,
     isWindows: isWindows,
@@ -536,6 +547,11 @@ class AppUpdater {
     String version, {
     void Function(int received, int total)? onProgress,
   }) async {
+    if (kind == UpdateInstallKind.macos) {
+      throw const AppUpdateException(
+        'На macOS установите обновление вручную из DMG.',
+      );
+    }
     if (kind == UpdateInstallKind.linuxDev) {
       throw const AppUpdateException(
         'Обновление из приложения доступно только для AppImage.',
@@ -598,6 +614,11 @@ class AppUpdater {
     required Future<bool> Function(String expectedVersion)
     waitForControlVersion,
   }) async {
+    if (kind == UpdateInstallKind.macos) {
+      throw const AppUpdateException(
+        'На macOS установите обновление вручную из DMG.',
+      );
+    }
     if (kind == UpdateInstallKind.linuxDev) {
       throw const AppUpdateException(
         'Обновление из приложения доступно только для AppImage.',
@@ -615,6 +636,10 @@ class AppUpdater {
         await _applyWindowsSetup(files);
       case UpdateInstallKind.android:
         await _applyAndroid(files);
+      case UpdateInstallKind.macos:
+        throw const AppUpdateException(
+          'На macOS установите обновление вручную из DMG.',
+        );
       case UpdateInstallKind.linuxDev:
         throw const AppUpdateException(
           'Обновление из приложения доступно только для AppImage.',

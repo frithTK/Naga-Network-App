@@ -32,6 +32,9 @@ func (f *recordingExec) Output(name string, args ...string) ([]byte, error) {
 }
 
 func TestPinOlcRoomRestoresOnBypassFailure(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		t.Skip("olcRTC system routing currently supports Linux and Windows only")
+	}
 	execer := &recordingExec{out: map[string]string{}}
 	if runtime.GOOS == "windows" {
 		execer.out["route print -4"] = "0.0.0.0 0.0.0.0 192.168.1.1 192.168.1.10 25\n"

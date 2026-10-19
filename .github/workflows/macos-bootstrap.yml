@@ -1,0 +1,203 @@
+name: macOS ARM64 bootstrap
+
+on:
+  push:
+    branches: ['feat/macos-*']
+    paths:
+      - '.github/workflows/macos-bootstrap.yml'
+      - 'scripts/macos/**'
+      - 'scripts/runtime/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'cmd/**'
+      - 'core/**'
+      - 'app/**'
+      - 'native/macos/**'
+      - 'packaging/macos/**'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional published prerelease to diagnose instead of rebuilding'
+        type: string
+        default: ''
+      release_sha256:
+        description: 'Required SHA-256 when release_tag is set'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-bootstrap-${{ github.ref }}-${{ inputs.release_tag || 'build' }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    if: ${{ !inputs.release_tag }}
+    name: Native ARM64 ${{ matrix.component }}
+    runs-on: macos-14
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [naga-control, sing-box, olcrtc, hev-socks5-tunnel]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read pinned Go toolchain
+        id: toolchain
+        run: |
+          python3 -c 'import pathlib,re; print("version=" + re.search(r"^toolchain\s+go(\S+)", pathlib.Path("go.mod").read_text(), re.M).group(1))' >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.toolchain.outputs.version }}
+      - name: Record runner and verify ARM64 host
+        run: |
+          uname -sm
+          test "$(uname -m)" = arm64
+          sw_vers
+          xcodebuild -version
+          go version
+      - name: Portable macOS bundle path regression tests
+        if: matrix.component == 'naga-control'
+        run: python3 -m unittest discover -s scripts/macos/tests -v
+      - name: Privileged VPN configuration boundary
+        if: matrix.component == 'naga-control'
+        run: python3 scripts/macos/test-vpn-config.py
+      - name: Build and inspect component
+        run: python3 scripts/macos/bootstrap.py --component '${{ matrix.component }}'
+      - name: Native macOS Go tests and vet
+        if: matrix.component == 'naga-control'
+        run: |
+          go test -timeout=180s ./...
+          go vet ./...
+      - name: Save proof artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-${{ matrix.component }}-${{ github.run_number }}
+          path: |
+            build/macos-bootstrap/**/manifest.json
+            build/macos-bootstrap/**/naga-control/naga-control
+            build/macos-bootstrap/**/sing-box/sing-box
+            build/macos-bootstrap/**/olcrtc/olcrtc
+            build/macos-bootstrap/**/hev-socks5-tunnel/hev-socks5-tunnel
+            build/macos-bootstrap/**/LICENSE.*
+            build/macos-bootstrap/**/go-build-info.txt
+            build/macos-bootstrap/**/*.log
+          if-no-files-found: error
+          retention-days: 14
+
+  flutter:
+    if: ${{ !inputs.release_tag }}
+    name: Flutter macOS application
+    runs-on: macos-14
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read pinned Go toolchain
+        id: toolchain
+        working-directory: .
+        run: |
+          python3 -c 'import pathlib,re; print("version=" + re.search(r"^toolchain\s+go(\S+)", pathlib.Path("go.mod").read_text(), re.M).group(1))' >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.toolchain.outputs.version }}
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.1'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart analyze
+      - run: flutter test --reporter expanded
+      - name: Build ad-hoc application with user backend
+        run: bash ../scripts/macos/build-app.sh
+      - name: Inspect application metadata, signatures and ARM64 dependencies
+        run: python3 ../scripts/macos/check-app.py 'build/macos/Build/Products/Release/Naga Network.app' --report ../build/macos-app-inspection.json
+      - name: Exercise packaged backend without VPN
+        run: python3 ../scripts/macos/test-app-session.py 'build/macos/Build/Products/Release/Naga Network.app'
+      - name: Open actual GUI through LaunchServices
+        run: swift ../scripts/macos/test-gui-launch.swift 'build/macos/Build/Products/Release/Naga Network.app' ../build/macos-gui-launch.json
+      - name: Build and verify development DMG
+        run: |
+          bash ../scripts/macos/build-dmg.sh
+          macos_app_version="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' 'build/macos/Build/Products/Release/Naga Network.app/Contents/Info.plist')"
+          python3 ../scripts/macos/check-dmg.py "../build/macos-dmg/NagaNetwork-${macos_app_version}-macos-arm64.dmg" --report ../build/macos-dmg/dmg-inspection.json
+      - name: Preserve app bundle metadata in zip
+        run: |
+          mkdir -p ../build
+          ditto -c -k --sequesterRsrc --keepParent 'build/macos/Build/Products/Release/Naga Network.app' ../build/macos-application.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-application-${{ github.run_number }}
+          path: |
+            build/macos-application.zip
+            build/macos-app-inspection.json
+            build/macos-gui-launch.json
+            build/macos-dmg/*.dmg
+            build/macos-dmg/SHA256SUMS.txt
+            build/macos-dmg/dmg-inspection.json
+          retention-days: 14
+
+  service-probe:
+    if: ${{ !inputs.release_tag }}
+    name: ServiceManagement diagnostic prototypes A and B
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Typecheck native VPN bridge and helper before packaging
+        run: python3 scripts/macos/test-vpn-native-build.py
+      - name: Compile and ad-hoc sign both diagnostic versions
+        run: |
+          bash scripts/macos/build-service-probe.sh A
+          bash scripts/macos/build-service-probe.sh B
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-service-probe-${{ github.run_number }}
+          path: |
+            build/macos-service-probe/**/*.zip
+            build/macos-service-probe/**/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  release-launch:
+    if: ${{ inputs.release_tag != '' }}
+    name: Published GUI launch on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download exact published development DMG
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_SHA256: ${{ inputs.release_sha256 }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess
+          from pathlib import Path
+          tag = os.environ['RELEASE_TAG']
+          digest = os.environ['RELEASE_SHA256']
+          assert re.fullmatch(r'macos-dev-[A-Za-z0-9._-]+', tag)
+          assert re.fullmatch(r'[a-f0-9]{64}', digest)
+          Path('build').mkdir(exist_ok=True)
+          url = f'https://github.com/frithTK/Naga-Network-App/releases/download/{tag}/NagaNetwork-1.2.9-macos-arm64.dmg'
+          subprocess.run(['curl', '-fL', '--retry', '2', '-o', 'build/published.dmg', url], check=True)
+          subprocess.run(['python3', 'scripts/macos/test-release-launch.py', 'build/published.dmg',
+                          '--sha256', digest, '--output', 'build/release-launch'], check=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-release-launch-${{ matrix.os }}-${{ github.run_number }}
+          path: build/release-launch/
+          if-no-files-found: warn
+          retention-days: 14

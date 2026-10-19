@@ -27,7 +27,7 @@ func TestDefaultRootUsesNagaDataDir(t *testing.T) {
 }
 
 func TestDefaultRootUsesXDGOnUnix(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		t.Skip("unix XDG layout")
 	}
 	t.Setenv("NAGA_DATA_DIR", "")
@@ -40,6 +40,23 @@ func TestDefaultRootUsesXDGOnUnix(t *testing.T) {
 	}
 	want := filepath.Join(xdg, "naga-network")
 	if got != want {
+		t.Fatalf("DefaultRoot() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultRootUsesApplicationSupportOnMacOS(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS Application Support layout")
+	}
+	home := filepath.Join(t.TempDir(), "Имя с пробелами")
+	t.Setenv("HOME", home)
+	t.Setenv("NAGA_DATA_DIR", "")
+	t.Setenv("XDG_DATA_HOME", "/must-not-use-linux-layout")
+	got, err := DefaultRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, "Library", "Application Support", "Naga Network"); got != want {
 		t.Fatalf("DefaultRoot() = %q, want %q", got, want)
 	}
 }

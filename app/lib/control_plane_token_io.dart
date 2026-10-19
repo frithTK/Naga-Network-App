@@ -3,6 +3,7 @@ import 'dart:io';
 String? loadControlPlaneToken({
   Map<String, String>? environment,
   bool? isWindows,
+  bool? isMacOS,
 }) {
   final env = environment ?? Platform.environment;
   final fromEnvironment = env['NAGA_CONTROL_TOKEN']?.trim();
@@ -13,6 +14,7 @@ String? loadControlPlaneToken({
   final path = controlPlaneTokenFilePath(
     environment: env,
     isWindows: isWindows ?? Platform.isWindows,
+    isMacOS: isMacOS,
   );
   if (path == null) return null;
 
@@ -27,6 +29,7 @@ String? loadControlPlaneToken({
 String? controlPlaneTokenFilePath({
   Map<String, String>? environment,
   bool? isWindows,
+  bool? isMacOS,
 }) {
   final env = environment ?? Platform.environment;
   final configuredPath = env['NAGA_CONTROL_TOKEN_FILE']?.trim();
@@ -48,6 +51,11 @@ String? controlPlaneTokenFilePath({
   }
 
   final home = env['HOME']?.trim();
+  if (isMacOS ?? Platform.isMacOS) {
+    return home == null || home.isEmpty
+        ? null
+        : '$home/Library/Application Support/Naga Network/control.token';
+  }
   final dataHome = env['XDG_DATA_HOME']?.trim();
   if (dataHome != null && dataHome.isNotEmpty) {
     return '$dataHome/naga-network/control.token';

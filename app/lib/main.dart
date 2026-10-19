@@ -14,6 +14,8 @@ import 'node_probe_controller.dart';
 import 'config_file_picker.dart';
 import 'subscription_fetch.dart';
 import 'subscription_link.dart';
+import 'macos_backend.dart';
+import 'macos_diagnostics.dart';
 
 part 'ui/home.dart';
 part 'ui/components.dart';
@@ -27,7 +29,21 @@ void main(List<String> args) {
       'Inter',
     ], await rootBundle.loadString('assets/fonts/OFL.txt'));
   });
-  runApp(NagaNetworkApp(initialImportURL: launchSubscriptionURL(args)));
+  final initialURL = launchSubscriptionURL(args);
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.macOS) {
+    WidgetsFlutterBinding.ensureInitialized();
+    runApp(
+      MacOSBackendGate(
+        builder: (client) => NagaNetworkApp(
+          initialImportURL: initialURL,
+          controlPlane: client,
+          developmentNotice: 'Тестовая сборка VPN для Mac: режим TUN. При первом подключении разрешите службу Naga в настройках macOS.',
+        ),
+      ),
+    );
+  } else {
+    runApp(NagaNetworkApp(initialImportURL: initialURL));
+  }
 }
 
 const _trayChannel = MethodChannel('eu.nagavpn.naga_network/tray');
@@ -105,6 +121,7 @@ String get nagaAppPlatform {
   if (nagaUsesWindowsChrome) return 'windows';
   if (nagaRunsOnAndroid) return 'android';
   if (nagaRunsOnIOS) return 'ios';
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.macOS) return 'macos';
   return 'linux';
 }
 
@@ -522,9 +539,16 @@ ThemeData nagaTheme() {
 }
 
 class NagaNetworkApp extends StatelessWidget {
-  const NagaNetworkApp({super.key, this.initialImportURL});
+  const NagaNetworkApp({
+    super.key,
+    this.initialImportURL,
+    this.controlPlane,
+    this.developmentNotice,
+  });
 
   final String? initialImportURL;
+  final ControlPlaneClient? controlPlane;
+  final String? developmentNotice;
 
   @override
   Widget build(BuildContext context) {
@@ -532,9 +556,37 @@ class NagaNetworkApp extends StatelessWidget {
       title: 'Naga Network',
       debugShowCheckedModeBanner: false,
       theme: nagaTheme(),
-      home: Uri.base.queryParameters['design'] == 'lab'
-          ? const DesignGalleryPage()
-          : DashboardPage(initialImportURL: initialImportURL),
+      home: Column(
+        children: [
+          if (developmentNotice != null && controlPlane != null)
+            MacOSCheckBanner(client: controlPlane!, notice: developmentNotice!)
+          else if (developmentNotice != null)
+            Material(
+              color: _surface,
+              child: SafeArea(
+                bottom: false,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 10,
+                  ),
+                  child: Text(
+                    developmentNotice!,
+                    style: const TextStyle(color: _muted, fontSize: 12),
+                  ),
+                ),
+              ),
+            ),
+          Expanded(
+            child: Uri.base.queryParameters['design'] == 'lab'
+                ? const DesignGalleryPage()
+                : DashboardPage(
+                    initialImportURL: initialImportURL,
+                    controlPlane: controlPlane,
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -2189,7 +2241,9 @@ class _DashboardPageState extends State<DashboardPage>
 
   Future<void> _loadAppUpdatePrefs() async {
     if (runningUnderFlutterTest()) return;
-    final path = await resolveAppUpdatePrefsPath();
+    final path = await resolveAppUpdatePrefsPath(
+      dataDirectory: _controlPlane.dataDirectory,
+    );
     final prefs = loadAppUpdatePrefs(path: path);
     final installError = await _updater?.androidInstallError();
     if (!mounted) return;
@@ -3161,6 +3215,9 @@ class _DashboardPageState extends State<DashboardPage>
     setState(() => _status = ConnectionStatus.connecting);
     _runtimeRequestInFlight = true;
     try {
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.macOS) {
+        await prepareMacOSVPN();
+      }
       if (!await _prepareAndroidTunnel()) {
         if (!mounted) return;
         setState(() => _status = ConnectionStatus.error);
@@ -3192,6 +3249,29 @@ class _DashboardPageState extends State<DashboardPage>
           ),
         );
       }
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      setState(() => _status = ConnectionStatus.error);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.message ?? 'Не удалось включить службу VPN.'),
+        ),
+      );
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() => _status = ConnectionStatus.error);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Истекло время ожидания разрешения VPN. Повторите подключение.',
+          ),
+        ),
+      );
+    } on FormatException catch (error) {
+      if (!mounted) return;
+      setState(() => _status = ConnectionStatus.error);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error.message)));
     } on ControlPlaneException catch (error) {
       if (nagaNeedsSystemTunnel) await AndroidVpn.instance.stop();
       if (!mounted) return;
@@ -7311,13 +7391,16 @@ class _AppUpdateTile extends StatelessWidget {
     final canInstall =
         check?.newerAvailable == true &&
         (check?.missingAssets.isEmpty ?? false) &&
-        kind != UpdateInstallKind.linuxDev;
+        kind != UpdateInstallKind.linuxDev &&
+        kind != UpdateInstallKind.macos;
     String detail = 'Текущая версия $uiVersion';
     if (behind) {
       detail =
           'Приложение $uiVersion, control-plane $controlVersion — обновите runtime';
     } else if (kind == UpdateInstallKind.linuxDev) {
       detail = 'Проверка доступна. Установка — только из AppImage.';
+    } else if (kind == UpdateInstallKind.macos) {
+      detail = 'Проверка доступна. Обновление macOS устанавливается из DMG.';
     }
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),

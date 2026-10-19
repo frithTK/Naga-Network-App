@@ -23,13 +23,17 @@ import (
 )
 
 type LocalOptions struct {
-	Listen       string
-	DataDir      string
-	TokenPath    string
-	NativeLibDir string
-	SingBoxPath  string
-	HevPath      string
-	OlcPath      string
+	Listen                      string
+	DataDir                     string
+	TokenPath                   string
+	NativeLibDir                string
+	SingBoxPath                 string
+	HevPath                     string
+	OlcPath                     string
+	LogDir                      string
+	RejectBrowserOrigin         bool
+	ConnectionUnavailableReason string
+	OnlyExplicitRuntime         bool
 }
 
 type LocalServer struct {
@@ -86,11 +90,18 @@ func StartLocal(opts LocalOptions) (*LocalServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	journal, journalErr := diagnostics.New(filepath.Join(store.Root, "logs"))
+	logDir := strings.TrimSpace(opts.LogDir)
+	if logDir == "" {
+		logDir = filepath.Join(store.Root, "logs")
+	}
+	journal, journalErr := diagnostics.New(logDir)
 	if journalErr != nil {
 		journal = nil
 	}
-	binaryPath, _ := singbox.DiscoverControlRuntime(opts.SingBoxPath)
+	binaryPath := ""
+	if !opts.OnlyExplicitRuntime || strings.TrimSpace(opts.SingBoxPath) != "" {
+		binaryPath, _ = singbox.DiscoverControlRuntime(opts.SingBoxPath)
+	}
 	adapter := singbox.Adapter{
 		BinaryPath: binaryPath,
 		Journal:    journal,
@@ -113,26 +124,37 @@ func StartLocal(opts LocalOptions) (*LocalServer, error) {
 	runtime.NetworkClass = func() policy.NetworkClass { return policy.NetworkUnknown }
 	subClient := subscription.Client{
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
-		UserAgent:  "NagaNetwork/android",
+		UserAgent:  "NagaNetwork/" + goruntime.GOOS,
 	}
 	if runtime.RuleSets != nil {
 		runtime.RuleSets.Fetcher = subClient
 	}
 	api := Server{
-		Subscriptions: subClient,
-		Storage:       &store,
-		Runtime:       runtime,
-		Validator:     adapter,
-		Token:         token,
-		NetworkClass:  runtime.NetworkClass,
-		RuntimeReady:  binaryPath != "",
-		OlcRTCReady:   olcrtc.BinaryReady(opts.OlcPath),
-		Version:       version.Version,
+		Subscriptions:               subClient,
+		Storage:                     &store,
+		Runtime:                     runtime,
+		Validator:                   adapter,
+		Token:                       token,
+		NetworkClass:                runtime.NetworkClass,
+		RuntimeReady:                binaryPath != "",
+		OlcRTCReady:                 olcrtc.BinaryReady(opts.OlcPath),
+		Version:                     version.Version,
+		ConnectionUnavailableReason: opts.ConnectionUnavailableReason,
 	}
 	api.Journal = journal
+	var handler http.Handler = api
+	if opts.RejectBrowserOrigin {
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Origin") != "" {
+				writeError(w, http.StatusForbidden, "native application session does not accept browser origins")
+				return
+			}
+			api.ServeHTTP(w, r)
+		})
+	}
 	server := &http.Server{
 		Addr:              listen,
-		Handler:           api,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      120 * time.Second,
