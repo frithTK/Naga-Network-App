@@ -115,3 +115,13 @@ Release `.app` build, Dart analyzer и Flutter tests прошли на native ma
 Исправлен пробел CI: добавлен фактический запуск GUI и отдельно учитывается distribution assessment. Удаляются непереносимые пути поиска библиотек Flutter, нормализуются executable permissions, framework заново подписывается перед app. Новые regression tests проверяют реальные проблемные пути, пробелы и symlink escape. Первое macOS выполнение нового path test обнаружило сравнение `/var` и `/private/var` в fixture; корень теста исправлен через `resolve()`.
 
 Подробности и условия штатной поставки: [отказ запуска](MACOS_LAUNCH_FAILURE.md). Developer ID/notarization не предоставлены, установка скачанного пакета остаётся неподтверждённой. Повторная ad-hoc сборка сама по себе не закрывает проблему распространения.
+
+## Успешная проверка устройства, 2026-10-19
+
+Пользователь подтвердил macOS **26.2** и установленную копию в «Программах», затем передал [исходный JSON](macos-test-results/2026-10-19-macos-26.2-quick-check.json): версия 1.2.9+14, diagnostic `integrated-1`, `overall_result: pass`. Приложение запущено от обычного пользователя; backend health прошёл. Служба зарегистрирована (`enabled`), XPC вернул root status (`effective_uid: 0`), автоматический unregister завершился `not_registered` / cleanup pass.
+
+Это первое подтверждение регистрации/root XPC/unregister на устройстве для встроенного status-only helper. Способ первого открытия, source commit и checksum установленного DMG в отчёте отсутствуют. Пользователь не хочет ручных команд в Терминале и не имеет Apple Developer Program; командный обход не считается выполненным. Воспроизводимый способ GUI-установки ещё уточняется. PKG пока только рассмотрен, не создан и не проверен.
+
+M00.04.03/.05 частично подтверждены, но отказ разрешения, повторная регистрация, наблюдение завершения процесса helper, reboot/A–B/upgrade и Apple-issued signing не закрыты. Физический результат macOS 26.2 не подтверждает регистрацию на macOS 14. `vpn_tested: false`; сетевой трафик/TUN/DNS не проверялись. Для Go → bridge → helper и production authority нужны следующие задачи M00.05/M03.
+
+Все шесть native jobs [run 39208827007](https://github.com/frithTK/Naga-Network-App/actions/runs/39208827007), source `907e71b91e705e55807436f8bab940942b76421a`, **PASS**, оба Quality checks **PASS**. Включены новые path regression tests, actual GUI launch/quit и отдельный distribution assessment. Последний остаётся `REJECTED` для ad-hoc пакета; исправление RPATH не объявляется исправлением первоначального отказа Finder.
