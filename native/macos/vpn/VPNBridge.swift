@@ -22,7 +22,7 @@ func helperCDHash() throws -> String {
     .deletingLastPathComponent().appendingPathComponent("NagaVPNHelper")
   var code: SecStaticCode?
   guard SecStaticCodeCreateWithPath(path as CFURL, [], &code) == errSecSuccess, let code,
-    SecStaticCodeCheckValidity(code, [.strictValidate], nil) == errSecSuccess else { throw VPNFailure("Подпись службы VPN повреждена") }
+    SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSStrictValidate), nil) == errSecSuccess else { throw VPNFailure("Подпись службы VPN повреждена") }
   var info: CFDictionary?
   guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
     let values = info as? [String: Any], let hash = values[kSecCodeInfoUnique as String] as? Data else { throw VPNFailure("Не удалось проверить версию службы VPN") }
