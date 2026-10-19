@@ -150,6 +150,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Typecheck native VPN bridge and helper before packaging
+        run: python3 scripts/macos/test-vpn-native-build.py
       - name: Compile and ad-hoc sign both diagnostic versions
         run: |
           bash scripts/macos/build-service-probe.sh A
