@@ -44,18 +44,33 @@ func runAppSession(parent io.Reader, readiness io.Writer, singBoxPath string) (e
 		return err
 	}
 	logDir := filepath.Join(root, "logs")
+	unavailable := "VPN недоступен: в сборке отсутствует системная служба macOS."
 	if runtime.GOOS == "darwin" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return err
 		}
 		logDir = filepath.Join(home, "Library", "Logs", "Naga Network")
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		dir := filepath.Dir(self)
+		singBoxPath = filepath.Join(dir, "sing-box")
+		unavailable = ""
+		for _, name := range []string{"sing-box", "NagaVPNBridge", "NagaVPNHelper"} {
+			file, err := os.Lstat(filepath.Join(dir, name))
+			if err != nil || !file.Mode().IsRegular() || file.Mode()&0111 == 0 {
+				unavailable = "VPN недоступен: компоненты системной службы отсутствуют или повреждены. Переустановите Naga."
+				break
+			}
+		}
 	}
 	local, err := control.StartLocal(control.LocalOptions{
 		Listen: "127.0.0.1:0", DataDir: root, TokenPath: tokenPath,
 		SingBoxPath: singBoxPath, LogDir: logDir, RejectBrowserOrigin: true,
 		OnlyExplicitRuntime:         true,
-		ConnectionUnavailableReason: "VPN в тестовой сборке macOS ещё недоступен: системная служба не подключена.",
+		ConnectionUnavailableReason: unavailable,
 	})
 	if err != nil {
 		return fmt.Errorf("start application backend: %w", err)

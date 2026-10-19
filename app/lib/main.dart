@@ -37,7 +37,7 @@ void main(List<String> args) {
         builder: (client) => NagaNetworkApp(
           initialImportURL: initialURL,
           controlPlane: client,
-          developmentNotice: 'Тестовая сборка macOS: профили и настройки доступны. VPN ещё не подключён.',
+          developmentNotice: 'Тестовая сборка VPN для Mac: режим TUN. При первом подключении разрешите службу Naga в настройках macOS.',
         ),
       ),
     );
@@ -3215,6 +3215,9 @@ class _DashboardPageState extends State<DashboardPage>
     setState(() => _status = ConnectionStatus.connecting);
     _runtimeRequestInFlight = true;
     try {
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.macOS) {
+        await prepareMacOSVPN();
+      }
       if (!await _prepareAndroidTunnel()) {
         if (!mounted) return;
         setState(() => _status = ConnectionStatus.error);
@@ -3246,6 +3249,29 @@ class _DashboardPageState extends State<DashboardPage>
           ),
         );
       }
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      setState(() => _status = ConnectionStatus.error);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.message ?? 'Не удалось включить службу VPN.'),
+        ),
+      );
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() => _status = ConnectionStatus.error);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Истекло время ожидания разрешения VPN. Повторите подключение.',
+          ),
+        ),
+      );
+    } on FormatException catch (error) {
+      if (!mounted) return;
+      setState(() => _status = ConnectionStatus.error);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error.message)));
     } on ControlPlaneException catch (error) {
       if (nagaNeedsSystemTunnel) await AndroidVpn.instance.stop();
       if (!mounted) return;

@@ -21,6 +21,7 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+		A90300000000000000000001 /* MacOSVPNService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90300000000000000000002; };
         A90200000000000000000001 /* MacOSQuickCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90200000000000000000002 /* MacOSQuickCheck.swift */; };
         A90200000000000000000003 /* ProbeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90200000000000000000004 /* ProbeProtocol.swift */; };
 		A90100000000000000000001 /* MacOSBackendHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90100000000000000000002 /* MacOSBackendHost.swift */; };
@@ -64,6 +65,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A90300000000000000000002 /* MacOSVPNService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacOSVPNService.swift; sourceTree = "<group>"; };
         A90200000000000000000002 /* MacOSQuickCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacOSQuickCheck.swift; sourceTree = "<group>"; };
         A90200000000000000000004 /* ProbeProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProbeProtocol.swift; path = ../../native/macos/service-probe/ProbeProtocol.swift; sourceTree = SOURCE_ROOT; };
 		A90100000000000000000002 /* MacOSBackendHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacOSBackendHost.swift; sourceTree = "<group>"; };
@@ -175,6 +177,7 @@
 				33CC10F02044A3C60003C045 /* AppDelegate.swift */,
 				33CC11122044BFA00003C045 /* MainFlutterWindow.swift */,
 				A90100000000000000000002 /* MacOSBackendHost.swift */,
+				A90300000000000000000002 /* MacOSVPNService.swift */,
                 A90200000000000000000002 /* MacOSQuickCheck.swift */,
                 A90200000000000000000004 /* ProbeProtocol.swift */,
 				33E51913231747F40026EE4D /* DebugProfile.entitlements */,
@@ -365,6 +368,7 @@
 			files = (
 				33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */,
 				A90100000000000000000001 /* MacOSBackendHost.swift in Sources */,
+				A90300000000000000000001 /* MacOSVPNService.swift in Sources */,
                 A90200000000000000000001 /* MacOSQuickCheck.swift in Sources */,
                 A90200000000000000000003 /* ProbeProtocol.swift in Sources */,
 				33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */,

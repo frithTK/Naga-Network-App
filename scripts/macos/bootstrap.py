@@ -75,6 +75,21 @@ def build_component(name, spec, directory, env, version):
         if name == 'sing-box':
             run([sys.executable, str(ROOT / 'scripts/runtime/apply-singbox-security-deps.py'), str(source)],
                 cwd=ROOT, env=env, log=log)
+            shutil.copy2(ROOT / 'scripts/macos/singbox-parent-watchdog.go.txt',
+                         source / 'cmd/sing-box/naga_parent_watchdog_darwin.go')
+            for suffix in ('', '_test'):
+                shutil.copy2(ROOT / f'scripts/macos/singbox-vpn-api{suffix}.go.txt',
+                             source / f'experimental/clashapi/naga_vpn_api{suffix}.go')
+            server = source / 'experimental/clashapi/server.go'
+            text = server.read_text()
+            anchor = 'chiRouter := chi.NewRouter()'
+            if text.count(anchor) != 1:
+                raise RuntimeError('sing-box API layout changed; recheck privileged API restrictions')
+            server.write_text(text.replace(anchor, anchor + '\n\tchiRouter.Use(nagaVPNAPI)'))
+            result['local_overlays'] = {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in (ROOT / 'scripts/macos').glob('singbox-*.go.txt')
+            }
         elif name == 'olcrtc':
             fixes = [f'{module}@{pin}' for module, pin in spec['dependency_fixes'].items()]
             run(['go', 'get', *fixes], cwd=source, env=env, log=log)
@@ -107,11 +122,13 @@ def build_component(name, spec, directory, env, version):
         result['build'] = 'PASS'
         if platform.system() == 'Darwin' and platform.machine() == 'arm64':
             if name == 'sing-box':
+                run(['go', 'test', '-tags', 'with_clash_api', './experimental/clashapi',
+                     '-run', '^TestNagaVPNAPI$', '-count=1'], cwd=source, env=env, log=log)
                 config = directory / 'check.json'
                 config.write_text('{"outbounds":[{"type":"direct","tag":"direct"}]}\n')
                 run([str(binary), 'version'], cwd=directory, env=env, log=log)
                 run([str(binary), 'check', '-c', str(config)], cwd=directory, env=env, log=log)
-                result['native_checks'] = ['version', 'check without a TUN interface']
+                result['native_checks'] = ['privileged API restrictions', 'version', 'check without a TUN interface']
             elif name == 'naga-control':
                 run([str(binary), '-help'], cwd=directory, env=env, log=log)
                 result['native_checks'] = ['CLI help without starting the service']
@@ -139,7 +156,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--component', choices=(*COMPONENTS, 'all'), default='all')
     parser.add_argument('--output-root', type=Path, default=ROOT / 'build/macos-bootstrap')
+    parser.add_argument('--export-dir', type=Path, help='Copy a successful single component and its license here')
     args = parser.parse_args()
+    if args.export_dir and args.component == 'all':
+        parser.error('--export-dir requires one component')
     args.output_root.mkdir(parents=True, exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix=f'{args.component}-', dir=args.output_root)).resolve()
     pins = json.loads(Path(__file__).with_name('runtime-pins.json').read_text())
@@ -163,6 +183,10 @@ def main():
         manifest['components'].append(result)
         (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         print(f'{name}: build={result["build"]}, native={result["native_execution"]}', flush=True)
+        if args.export_dir and result['build'] == 'PASS' and result['native_execution'] != 'FAIL':
+            args.export_dir.mkdir(parents=True, exist_ok=True)
+            for file in (name, f'LICENSE.{name}'):
+                shutil.copy2(output / name / file, args.export_dir / file)
     print(f'Manifest: {output / "manifest.json"}', flush=True)
     return int(any(item['build'] == 'FAIL' or item['native_execution'] == 'FAIL'
                    for item in manifest['components']))

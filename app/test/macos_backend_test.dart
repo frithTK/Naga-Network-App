@@ -6,6 +6,55 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:naga_network/macos_backend.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('VPN start requires a compatible ready native service', () async {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    Map<String, dynamic>? response;
+    messenger.setMockMethodCallHandler(macOSNativeChannel, (call) async {
+      expect(call.method, 'prepareMacOSVPN');
+      return response;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(macOSNativeChannel, null),
+    );
+    for (final value in <Map<String, dynamic>?>[
+      null,
+      {'ready': false, 'protocol_version': 1},
+      {'ready': true, 'protocol_version': 2},
+    ]) {
+      response = value;
+      await expectLater(prepareMacOSVPN(), throwsFormatException);
+    }
+    response = {'ready': true, 'protocol_version': 1};
+    await prepareMacOSVPN();
+  });
+
+  test('VPN permission refusal keeps the native error', () async {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(macOSNativeChannel, (_) async {
+      throw PlatformException(
+        code: 'vpn_permission',
+        message: 'Разрешите Naga',
+      );
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(macOSNativeChannel, null),
+    );
+    await expectLater(
+      prepareMacOSVPN(),
+      throwsA(
+        isA<PlatformException>().having(
+          (error) => error.code,
+          'code',
+          'vpn_permission',
+        ),
+      ),
+    );
+  });
+
   Map<String, dynamic> ready() => {
     'type': 'ready',
     'protocol_version': 1,

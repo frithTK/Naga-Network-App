@@ -1,0 +1,33 @@
+//go:build darwin
+
+package clashapi
+
+import (
+	"net/http/httptest"
+	"testing"
+)
+
+func TestNagaVPNAPI(t *testing.T) {
+	for _, tc := range []struct {
+		method, path string
+		allowed bool
+	}{
+		{"GET", "/", true}, {"GET", "/version", true}, {"GET", "/traffic", true},
+		{"GET", "/proxies", true}, {"GET", "/proxies/profile%3A%3Anode/delay?timeout=1000", true},
+		{"PUT", "/proxies/selector", true}, {"PUT", "/proxies/name%2Fwith%2Fslashes", true},
+		{"PUT", "/configs", false}, {"PATCH", "/configs", false},
+		{"POST", "/restart", false}, {"POST", "/upgrade", false},
+		{"GET", "/ui/file", false}, {"POST", "/script", false},
+		{"PUT", "/providers/rules/set", false}, {"DELETE", "/connections", false},
+		{"PUT", "/proxies/name/delay", false}, {"GET", "/proxies/../configs", false},
+	} {
+		r := httptest.NewRequest(tc.method, tc.path, nil)
+		if got := nagaVPNRequestAllowed(r); got != tc.allowed {
+			t.Errorf("%s %s allowed=%v, want %v", tc.method, tc.path, got, tc.allowed)
+		}
+		r.Header.Set("Origin", "https://untrusted.example")
+		if nagaVPNRequestAllowed(r) {
+			t.Errorf("browser origin accepted for %s %s", tc.method, tc.path)
+		}
+	}
+}

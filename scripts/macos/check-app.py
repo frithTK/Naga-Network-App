@@ -2,6 +2,7 @@
 """Inspect a built macOS scaffold; this does not assert VPN readiness."""
 
 import argparse
+import hashlib
 import json
 import plistlib
 import re
@@ -48,6 +49,32 @@ def inspect(bundle):
     if not (bundle / diagnostic_program).is_file():
         raise RuntimeError('diagnostic helper is missing')
 
+    vpn_id = 'eu.nagavpn.nagaNetwork.VPNHelper'
+    vpn_daemon = plistlib.loads((bundle / 'Contents/Library/LaunchDaemons' /
+                                (vpn_id + '.plist')).read_bytes())
+    if vpn_daemon != {'Label': vpn_id, 'BundleProgram': 'Contents/Helpers/NagaVPNHelper',
+                      'MachServices': {vpn_id: True}}:
+        raise RuntimeError('unexpected VPN daemon configuration')
+    helpers = bundle / 'Contents/Helpers'
+    for name in ('naga-control', 'sing-box', 'NagaVPNBridge', 'NagaVPNHelper'):
+        path = helpers / name
+        if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o111 != 0o111:
+            raise RuntimeError(f'VPN component is missing or not executable: {name}')
+    if not (bundle / 'Contents/Resources/licenses/LICENSE.sing-box').is_file():
+        raise RuntimeError('bundled sing-box license is missing')
+    runtime = json.loads((bundle / 'Contents/Resources/vpn-runtime.json').read_text())
+    if runtime['schema_version'] != 1 or runtime['protocol_version'] != 1 or runtime['build'] != 'vpn-1':
+        raise RuntimeError('incompatible VPN runtime manifest')
+    engine_digest = hashlib.sha256((helpers / 'sing-box').read_bytes()).hexdigest()
+    bridge_details = subprocess.check_output(['codesign', '-dvvv', str(helpers / 'NagaVPNBridge')],
+                                             stderr=subprocess.STDOUT, text=True)
+    bridge_digest = re.search(r'^CDHash=([a-f0-9]{40})$', bridge_details, re.M).group(1)
+    check = json.loads(output(str(helpers / 'NagaVPNHelper'), '--self-check'))
+    for key, value in {'engine_sha256': engine_digest, 'bridge_cdhash': bridge_digest,
+                       'protocol_version': 1, 'build': 'vpn-1'}.items():
+        if runtime.get(key) != value or check.get(key) != value:
+            raise RuntimeError(f'VPN helper and bundled runtime disagree: {key}')
+
     executable = bundle / 'Contents/MacOS' / info['CFBundleExecutable']
     code = []
     for path in sorted(bundle.rglob('*')):
@@ -86,7 +113,7 @@ def inspect(bundle):
                             capture_output=True, text=True, timeout=60)
     return {'schema_version': 1, 'source_commit': output('git', '-C', str(ROOT), 'rev-parse', 'HEAD'),
             'bundle': expected, 'code': code, 'signature_verification': 'PASS',
-            'app_sandbox': False, 'vpn_device_acceptance': 'UNAVAILABLE',
+            'app_sandbox': False, 'vpn_runtime': runtime, 'vpn_device_acceptance': 'UNAVAILABLE',
             'distribution_assessment': {
                 'result': 'PASS' if policy.returncode == 0 else 'REJECTED',
                 'returncode': policy.returncode,

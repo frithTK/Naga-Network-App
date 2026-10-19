@@ -8,6 +8,15 @@ import 'control_plane_client.dart';
 
 const macOSNativeChannel = MethodChannel('eu.nagavpn.naga_network/macos');
 
+Future<void> prepareMacOSVPN() async {
+  final value = await macOSNativeChannel
+      .invokeMapMethod<String, dynamic>('prepareMacOSVPN')
+      .timeout(const Duration(seconds: 115));
+  if (value?['ready'] != true || value?['protocol_version'] != 1) {
+    throw const FormatException('Системная служба VPN не готова.');
+  }
+}
+
 class MacOSBackendConnection {
   const MacOSBackendConnection._(
     this.endpoint,

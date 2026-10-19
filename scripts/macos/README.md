@@ -1,6 +1,10 @@
 # macOS ARM64: bootstrap
 
-Текущий этап включает `.app` со встроенным пользовательским backend, кнопкой «Проверить Mac», тестовый DMG, сборку закреплённых компонентов и инженерный service probe. Основной план: [MACOS_DEVELOPMENT_PLAN.md](../../docs/MACOS_DEVELOPMENT_PLAN.md).
+Текущий исходный код включает экспериментальный sing-box TUN через отдельный VPN helper,
+пользовательский backend, кнопку «Проверить Mac» и DMG. Первая сетевая проверка описана
+в [MACOS_VPN_TEST.md](../../docs/MACOS_VPN_TEST.md); физический результат ещё не получен.
+Ранее опубликованный `check1` содержит только диагностическую службу и не включает VPN.
+Основной план: [MACOS_DEVELOPMENT_PLAN.md](../../docs/MACOS_DEVELOPMENT_PLAN.md).
 
 ```sh
 python3 scripts/macos/bootstrap.py --component all
@@ -10,7 +14,10 @@ python3 scripts/macos/bootstrap.py --component all
 
 На Linux Go-компоненты кросс-компилируются, native execution и сборка hev остаются `UNAVAILABLE`. На ARM64 macOS дополнительно проверяется запуск CLI: help/version, а для sing-box — `check` конфига без TUN. Эти операции не устанавливают службу и не меняют маршруты/DNS. `vpn_device_acceptance` остаётся `UNAVAILABLE` до физического прогона на M2.
 
-Workflow [macos-bootstrap.yml](../../.github/workflows/macos-bootstrap.yml) запускает независимые native jobs для четырёх компонентов и собирает Flutter `.app`. В него включены пользовательский backend и status-only diagnostic helper. Полноценный VPN helper относится к следующим задачам плана. A/B probe сохранён отдельно для инженерных проверок.
+Workflow [macos-bootstrap.yml](../../.github/workflows/macos-bootstrap.yml) запускает независимые
+native jobs для четырёх компонентов и собирает Flutter `.app` с backend, sing-box, bridge,
+VPN helper и отдельным diagnostic helper. Validator проверяется без root/сетевых изменений;
+проверка `.app` сверяет manifest и встроенные engine hash/CDHash. A/B probe сохранён отдельно.
 
 Native CI также запускает Go tests/vet и проверяет готовый `.app` через `check-app.py`: версии из pubspec, deployment target, strict code signature, отсутствие App Sandbox, ARM64 и динамические зависимости. Отчёт `macos-app-inspection.json` сохраняется вместе с ZIP приложения.
 
@@ -42,12 +49,18 @@ bash scripts/macos/build-service-probe.sh B
 
 ## Приложение с пользовательским backend
 
-На ARM64 Mac с Go/Flutter/Xcode: `bash scripts/macos/build-app.sh`. Скрипт собирает backend и Release UI из одной версии pubspec, встраивает `naga-control` в `Contents/Helpers` и подписывает вложенный code перед внешним app bundle. Запуск простого `flutter build macos` создаёт UI без этого шага упаковки; для установки нужен полный результат скрипта.
+На ARM64 Mac с Go/Flutter/Xcode: `bash scripts/macos/build-app.sh`. Скрипт собирает backend,
+закреплённый sing-box с Darwin watchdog/API restrictions и Release UI. Встраивает runtime
+в `Contents/Helpers`, нормализует bundle, подписывает bridge/engine и встраивает их hashes
+в VPN helper. Последним подписывается внешний app. Запуск простого `flutter build macos`
+создаёт UI без этого шага упаковки; для установки нужен полный результат скрипта.
 
 `test-app-session.py <путь-к-app>` проверяет упакованный CLI в изолированном временном домашнем каталоге: readiness, версию, обязательный token, отказ browser origin и штатную остановку по закрытию parent pipe. Программа не включает VPN. Нельзя запускать `--app-session` с выводом в терминал/журнал: этот режим требует приватных stdin/stdout pipes.
 
 ## Тестовый DMG
 
-После `build-app.sh`: `bash scripts/macos/build-dmg.sh`. В `build/macos-dmg/` сохраняются `NagaNetwork-<ver>-macos-arm64.dmg` и `SHA256SUMS.txt`. Это development-образ с ad-hoc приложением и явно указанным отсутствием VPN, не production release.
+После `build-app.sh`: `bash scripts/macos/build-dmg.sh`. В `build/macos-dmg/` сохраняются
+`NagaNetwork-<ver>-macos-arm64.dmg` и `SHA256SUMS.txt`. Это development-образ с ad-hoc
+приложением для первой проверки TUN, не production release.
 
 `python3 scripts/macos/check-dmg.py <image> --report build/macos-dmg/dmg-inspection.json` проверяет checksum образа, монтирует его read-only, проверяет Applications link/инструкцию/состав/подписи/ARM64 и запускает private session упакованного backend без VPN. После проверки образ отмонтируется. Сценарии процессов и каналов описаны в [контракте](../../docs/MACOS_PROCESS_CONTRACT.md).

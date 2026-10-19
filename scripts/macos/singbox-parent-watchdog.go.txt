@@ -1,0 +1,23 @@
+//go:build darwin
+
+package main
+
+import (
+    "os"
+    "strconv"
+    "syscall"
+    "time"
+)
+
+// A root engine must not outlive its owning helper, including SIGKILL. The
+// helper sets this fixed environment; ordinary user-mode probes do not.
+func init() {
+    expected, err := strconv.Atoi(os.Getenv("NAGA_VPN_PARENT_PID"))
+    if err != nil || expected <= 1 || os.Geteuid() != 0 { return }
+    go func() {
+        for os.Getppid() == expected { time.Sleep(250 * time.Millisecond) }
+        _ = syscall.Kill(os.Getpid(), syscall.SIGINT)
+        time.Sleep(3 * time.Second)
+        _ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+    }()
+}

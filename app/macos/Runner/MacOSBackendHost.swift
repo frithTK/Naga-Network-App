@@ -23,6 +23,8 @@ final class MacOSBackendHost {
     switch call.method {
     case "startBackend": start(result)
     case "stopBackend": stop { result(nil) }
+    case "prepareMacOSVPN": MacOSVPNService.shared.prepare(result)
+    case "macOSVPNStatus": MacOSVPNService.shared.status(result)
     case "runMacOSCheck": MacOSQuickCheck.shared.run(result: result)
     case "macOSCheckState": result(MacOSQuickCheck.shared.state)
     case "cancelMacOSCheck": MacOSQuickCheck.shared.cancel(result: result)
@@ -169,7 +171,7 @@ final class MacOSBackendHost {
     try? input?.close()
     input = nil
     let current = generation
-    DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+    DispatchQueue.main.asyncAfter(deadline: .now() + 35) { [weak self] in
       guard let self, self.generation == current, process.isRunning else { return }
       kill(process.processIdentifier, SIGKILL)
     }

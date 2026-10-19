@@ -61,7 +61,8 @@ def main():
                     if expected == 200:
                         health = json.load(response)
                         assert health['version'] == value['version']
-                        assert health['capabilities']['vpn_connect'] is False
+                        assert health['capabilities']['vpn_connect'] is True
+                        assert health['runtime_ready'] is True
             process.stdin.close()
             assert process.wait(timeout=10) == 0, 'parent EOF did not shut down cleanly'
             assert (root / 'control.token').stat().st_mode & 0o077 == 0
