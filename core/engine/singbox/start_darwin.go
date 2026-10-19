@@ -23,6 +23,11 @@ func restrictConfigAccess(string, string) error { return nil }
 func RunTunHost(string) error                   { return errTunHostUnsupported }
 
 func startPlatformProcess(ctx context.Context, req processRequest) (startedProcess, error) {
+	// Adapter.Args can describe an explicit user-mode command. Only the normal
+	// engine launch crosses into the helper; custom commands retain user rights.
+	if len(req.Args) != 3 || req.Args[0] != "run" || req.Args[1] != "-c" || req.Args[2] != req.ConfigPath {
+		return startCommandProcess(ctx, req)
+	}
 	data, err := readDarwinRuleSet(req.ConfigPath)
 	if err != nil {
 		return nil, err

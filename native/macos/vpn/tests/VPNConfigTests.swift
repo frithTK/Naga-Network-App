@@ -6,10 +6,10 @@ import Foundation
       "inbounds": [["type": "tun", "tag": "tun-in", "interface_name": "untrusted",
         "auto_route": true, "include_uid": [0], "mtu": 9000]],
       "outbounds": [["type": "vless", "tag": "proxy", "server": "example.invalid", "server_port": 443,
-        "uuid": "00000000-0000-4000-8000-000000000001", "tls": ["enabled": true,
+        "uuid": "00000000-0000-4000-8000-000000000001", "tls": ["enabled": true, "utls": ["enabled": true, "fingerprint": "chrome"],
           "server_name": "example.invalid", "reality": ["enabled": true,
             "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "short_id": "0123456789abcdef"]]]],
-      "route": ["final": "proxy", "rules": [["port": 53, "action": "hijack-dns"]]],
+      "route": ["final": "proxy", "default_domain_resolver": "bootstrap", "rules": [["port": 53, "action": "hijack-dns"]]],
       "dns": ["servers": [["type": "udp", "tag": "bootstrap", "server": "1.1.1.1"]], "final": "bootstrap"],
       "experimental": ["clash_api": ["external_controller": "127.0.0.1:49167", "secret": String(repeating: "a", count: 32)]]
     ]

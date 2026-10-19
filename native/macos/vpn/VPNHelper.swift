@@ -15,6 +15,8 @@ final class VPNSession {
   private var uid: uid_t = 0
   private var child: Process?
   private var interface = ""
+  private var interfaceIndex: UInt32 = 0
+  private var ownedRoutes: [(Bool, String)] = []
   private var dns: SCDynamicStore?
   private var heartbeatAt = Date()
   private var directory: URL?
@@ -88,6 +90,7 @@ final class VPNSession {
       let deadline = Date().addingTimeInterval(8)
       while if_nametoindex(name) == 0 && process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
       guard process.isRunning, if_nametoindex(name) != 0 else { throw VPNFailure("VPN-движок не создал utun. Проверьте профиль и повторите подключение") }
+      interfaceIndex = if_nametoindex(name)
       // Refuse an existing split-default route; never replace another VPN's
       // routes. A failed partial start rolls back only our own interface.
       for (v6, prefix) in routes {
@@ -96,6 +99,7 @@ final class VPNSession {
         arguments += ["-net", prefix, "-interface", name]
         let result = try command("/sbin/route", arguments)
         guard result.status == 0 else { throw VPNFailure("Маршруты заняты другой VPN или недоступны. Отключите другую VPN и повторите подключение") }
+        ownedRoutes.append((v6, prefix))
       }
       let options = [kSCDynamicStoreUseSessionKeys as String: true] as CFDictionary
       guard let store = SCDynamicStoreCreateWithOptions(nil, "Naga VPN" as CFString, options, nil, nil) else { throw VPNFailure("Не удалось открыть системную сессию DNS") }
@@ -137,8 +141,8 @@ final class VPNSession {
     stopping = true
     defer { stopping = false }
     dns = nil // Releases the per-session DNS key, including on partial start.
-    if !interface.isEmpty {
-      for (v6, prefix) in routes {
+    if interfaceIndex != 0 && if_nametoindex(interface) == interfaceIndex {
+      for (v6, prefix) in ownedRoutes {
         var query = ["-n", "get"]
         if v6 { query.append("-inet6") }
         query += ["-net", prefix]
@@ -162,10 +166,10 @@ final class VPNSession {
         while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
       }
     }
-    lastCleanup = child?.isRunning != true && (interface.isEmpty || if_nametoindex(interface) == 0)
+    lastCleanup = child?.isRunning != true && (interfaceIndex == 0 || if_nametoindex(interface) != interfaceIndex)
     if lastCleanup {
       if let directory { try? FileManager.default.removeItem(at: directory) }
-      child = nil; owner = nil; session = ""; interface = ""; directory = nil
+      child = nil; owner = nil; session = ""; interface = ""; interfaceIndex = 0; ownedRoutes = []; directory = nil
     }
     return lastCleanup
   }

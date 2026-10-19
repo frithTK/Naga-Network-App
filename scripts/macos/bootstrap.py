@@ -128,7 +128,12 @@ def build_component(name, spec, directory, env, version):
                 config.write_text('{"outbounds":[{"type":"direct","tag":"direct"}]}\n')
                 run([str(binary), 'version'], cwd=directory, env=env, log=log)
                 run([str(binary), 'check', '-c', str(config)], cwd=directory, env=env, log=log)
-                result['native_checks'] = ['privileged API restrictions', 'version', 'check without a TUN interface']
+                vpn_config = directory / 'helper-check.json'
+                run([sys.executable, str(ROOT / 'scripts/macos/test-vpn-config.py'), str(vpn_config)],
+                    cwd=ROOT, env=env, log=log)
+                run([str(binary), 'check', '-c', str(vpn_config)], cwd=directory, env=env, log=log)
+                result['native_checks'] = ['privileged API restrictions', 'version',
+                                          'check without a TUN interface', 'check helper-prepared TUN config (no start)']
             elif name == 'naga-control':
                 run([str(binary), '-help'], cwd=directory, env=env, log=log)
                 result['native_checks'] = ['CLI help without starting the service']
