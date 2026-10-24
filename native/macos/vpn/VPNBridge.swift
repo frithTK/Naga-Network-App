@@ -2,21 +2,6 @@ import Darwin
 import Foundation
 import Security
 
-private func readConfig() throws -> Data {
-  var data = Data()
-  while data.count <= vpnConfigLimit {
-    let chunk = try FileHandle.standardInput.read(upToCount: min(65536, vpnConfigLimit + 1 - data.count)) ?? Data()
-    guard !chunk.isEmpty else { throw VPNFailure("Не получена конфигурация VPN") }
-    if let newline = chunk.firstIndex(of: 10) {
-      data.append(chunk.prefix(upTo: newline))
-      guard data.count <= vpnConfigLimit else { break }
-      return data
-    }
-    data.append(chunk)
-  }
-  throw VPNFailure("Конфигурация VPN превышает 8 МБ")
-}
-
 func helperCDHash() throws -> String {
   let path = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
     .deletingLastPathComponent().appendingPathComponent("NagaVPNHelper")
@@ -37,7 +22,7 @@ func helperCDHash() throws -> String {
     let statusOnly = CommandLine.arguments.dropFirst() == ["--status"]
     var data = Data()
     if !statusOnly {
-      do { data = try readConfig() } catch { fail("Некорректная конфигурация VPN или превышен размер 8 МБ") }
+      do { data = try readVPNConfig(from: .standardInput) } catch { fail("Некорректная конфигурация VPN или превышен размер 8 МБ") }
     }
     let hash: String
     do { hash = try helperCDHash() } catch { fail("Переустановите Naga: не удалось проверить системную службу VPN") }

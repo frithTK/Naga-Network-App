@@ -63,7 +63,7 @@ def inspect(bundle):
     if not (bundle / 'Contents/Resources/licenses/LICENSE.sing-box').is_file():
         raise RuntimeError('bundled sing-box license is missing')
     runtime = json.loads((bundle / 'Contents/Resources/vpn-runtime.json').read_text())
-    if runtime['schema_version'] != 1 or runtime['protocol_version'] != 1 or runtime['build'] != 'vpn-1':
+    if runtime['schema_version'] != 1 or runtime['protocol_version'] != 1 or runtime['build'] != 'vpn-2':
         raise RuntimeError('incompatible VPN runtime manifest')
     engine_digest = hashlib.sha256((helpers / 'sing-box').read_bytes()).hexdigest()
     bridge_details = subprocess.check_output(['codesign', '-dvvv', str(helpers / 'NagaVPNBridge')],
@@ -71,7 +71,7 @@ def inspect(bundle):
     bridge_digest = re.search(r'^CDHash=([a-f0-9]{40})$', bridge_details, re.M).group(1)
     check = json.loads(output(str(helpers / 'NagaVPNHelper'), '--self-check'))
     for key, value in {'engine_sha256': engine_digest, 'bridge_cdhash': bridge_digest,
-                       'protocol_version': 1, 'build': 'vpn-1'}.items():
+                       'protocol_version': 1, 'build': 'vpn-2'}.items():
         if runtime.get(key) != value or check.get(key) != value:
             raise RuntimeError(f'VPN helper and bundled runtime disagree: {key}')
 

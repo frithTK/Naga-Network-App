@@ -3,7 +3,7 @@ import Foundation
 let vpnHelperID = "eu.nagavpn.nagaNetwork.VPNHelper"
 let vpnBridgeID = "eu.nagavpn.nagaNetwork.VPNBridge"
 let vpnProtocolVersion = 1
-let vpnBuild = "vpn-1"
+let vpnBuild = "vpn-2"
 let vpnConfigLimit = 8 * 1024 * 1024
 
 #if os(macOS)

@@ -102,7 +102,7 @@ func startPlatformProcess(ctx context.Context, req processRequest) (startedProce
 		return nil, ctx.Err()
 	case <-time.After(20 * time.Second):
 		_ = p.SignalStop()
-		return nil, errors.New("Служба VPN не ответила. Разрешите Naga в настройках фоновых элементов")
+		return nil, errors.New("Истекло время ожидания запуска VPN bridge. Повторите подключение; если ошибка сохраняется, передайте журнал событий")
 	}
 	return p, nil
 }

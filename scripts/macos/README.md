@@ -25,6 +25,12 @@ VPN helper и отдельным diagnostic helper. Validator проверяет
 
 Native CI также запускает Go tests/vet и проверяет готовый `.app` через `check-app.py`: версии из pubspec, deployment target, strict code signature, отсутствие App Sandbox, ARM64 и динамические зависимости. Отчёт `macos-app-inspection.json` сохраняется вместе с ZIP приложения.
 
+`python3 scripts/macos/test-vpn-input.py` проверяет production reader bridge в
+дочернем процессе с открытым stdin: короткую/фрагментированную конфигурацию,
+границы 64 KiB и 8 MiB, отказ при превышении размера или преждевременном EOF,
+сохранение канала до сигнала остановки. Требуются Python и Swift; тест работает
+на Linux и macOS без регистрации службы и изменения сети. Он включён в native CI.
+
 Для подключения TUN используйте [первую проверку VPN](../../docs/MACOS_VPN_TEST.md).
 Отдельная [быстрая диагностика](../../docs/MACOS_QUICK_CHECK.md) проверяет регистрацию/XPC/удаление
 status-only службы через кнопку «Проверить Mac». A/B, Терминал и перезагрузка для неё не нужны.

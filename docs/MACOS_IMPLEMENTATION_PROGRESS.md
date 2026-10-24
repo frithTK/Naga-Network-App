@@ -186,3 +186,33 @@ GUI report подтверждает окно, стабильный запуск,
 TCP/UDP/DNS/IPv6, восстановление сети, crash/reboot/sleep/wake и upgrade не подтверждены.
 Ad-hoc distribution assessment остаётся `REJECTED`; Apple notarization отсутствует.
 Успешный root status диагностической службы не заменяет эти проверки.
+
+## Ошибка запуска `vpn1`: логи от 2026-10-22, исправление 2026-10-25
+
+Получен первый физический результат: пользовательский backend и отдельные
+sing-box probes работают, но TUN-start завершается через ~20 секунд до события
+`process_started`. Подключение и передача трафика на Mac пока не подтверждены.
+Совет разрешить фоновый элемент в этой ошибке выдавался общим таймаутом Go,
+а не результатом проверки `SMAppService`.
+
+В bridge найдено блокирующее чтение: `FileHandle.read(upToCount: 65536)` ждёт
+заполнения последнего блока, пока backend сохраняет stdin открытым для управления
+жизнью VPN. Локальный запуск исходного reader на Swift/Linux с короткой JSON-строкой
+не отвечает при открытом pipe и читает frame только после EOF. Это объясняет
+наблюдаемый таймаут; тот же сценарий на macOS ещё должен пройти native CI.
+
+Reader вынесен в `VPNConfigInput.swift` и использует POSIX `read` с обработкой
+коротких чтений и EINTR: LF завершает конфигурацию, stdin остаётся открытым до
+остановки. [Контракт POSIX read у Apple](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/read.2.html)
+описывает возврат фактически прочитанных байтов для pipe. Лимит 8 MiB сохранён;
+общий Go timeout больше не приписывает сбой настройкам разрешений без проверки.
+
+Локально PASS: пять сценариев production reader с настоящими дочерними процессами
+и pipes (включая фрагменты UTF-8, отдельный LF, границы 64 KiB, ровно 8 MiB,
+превышение лимита без EOF и ранний EOF); 24 проверки privileged config validator;
+Go tests `core/engine/singbox` и `core/control`; кросс-компиляция Go tests для
+Darwin ARM64; shell syntax и `git diff --check`. Native typecheck/упаковка включают
+новый reader, а workflow запускает pipe regression перед проверкой bridge/helper.
+
+Новый DMG ещё не собран и не опубликован. Native CI и повторный connect/traffic/stop
+на физическом Mac после пересборки остаются открытыми; старый `vpn1` содержит ошибку.

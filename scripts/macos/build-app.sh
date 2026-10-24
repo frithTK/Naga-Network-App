@@ -25,6 +25,7 @@ mkdir -p "${bundle}/Contents/Resources/licenses"
 cp "${project_dir}/build/macos-app-runtime/LICENSE.sing-box" "${bundle}/Contents/Resources/licenses/LICENSE.sing-box"
 swiftc -parse-as-library -swift-version 5 -O -target arm64-apple-macos14.0 \
   "${project_dir}/native/macos/vpn/VPNProtocol.swift" \
+  "${project_dir}/native/macos/vpn/VPNConfigInput.swift" \
   "${project_dir}/native/macos/vpn/VPNBridge.swift" \
   -o "${bundle}/Contents/Helpers/NagaVPNBridge"
 swiftc -parse-as-library -swift-version 5 -O -target arm64-apple-macos14.0 -D INTEGRATED_DIAGNOSTIC \
@@ -65,7 +66,7 @@ digest = re.search(r'^CDHash=([a-f0-9]{40})$', details, re.M).group(1)
 engine = hashlib.sha256((helpers / 'sing-box').read_bytes()).hexdigest()
 Path(sys.argv[2]).write_text(f'let vpnBridgeCDHash = "{digest}"\nlet vpnEngineSHA256 = "{engine}"\n')
 (bundle / 'Contents/Resources/vpn-runtime.json').write_text(json.dumps({
-    'schema_version': 1, 'protocol_version': 1, 'build': 'vpn-1',
+    'schema_version': 1, 'protocol_version': 1, 'build': 'vpn-2',
     'engine_sha256': engine, 'bridge_cdhash': digest,
     'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
     'vpn_device_acceptance': 'UNAVAILABLE',
