@@ -1,0 +1,14 @@
+{
+  "result": "PASS",
+  "source_commit": "f3686913530a7487012f7a62760243b17d29ee33",
+  "app_build": 15,
+  "vpn_build": "vpn-2",
+  "image": "NagaNetwork-1.2.9-macos-arm64.dmg",
+  "size": 42291639,
+  "sha256": "1585d6c49321959d9ed5ca6cb5447c53f586b1eb1f752a491112206670d2b6cc",
+  "engine_sha256": "e8ae23b93a14a01e4b75f7683e4cc45fb2a6ad4c04275c943b642ab25bdb857a",
+  "bridge_cdhash": "24275a66aa64e4a2ee722b77b50f34a7754abf67",
+  "gui": "PASS",
+  "dmg_payload_matches_zip": true,
+  "vpn_device_acceptance": "UNAVAILABLE"
+}

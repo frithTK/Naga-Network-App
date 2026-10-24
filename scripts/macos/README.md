@@ -1,13 +1,16 @@
 # macOS ARM64: bootstrap
 
 Текущий исходный код включает экспериментальный sing-box TUN через отдельный VPN helper,
-пользовательский backend, кнопку «Проверить Mac» и DMG. Первая сетевая проверка описана
-в [MACOS_VPN_TEST.md](../../docs/MACOS_VPN_TEST.md); физический результат ещё не получен.
+пользовательский backend, кнопку «Проверить Mac» и DMG. Сетевая проверка описана
+в [MACOS_VPN_TEST.md](../../docs/MACOS_VPN_TEST.md). Первый прогон `vpn1` выявил таймаут
+старта bridge; в `vpn2` исправлено чтение канала. Передача трафика после исправления
+ещё требует повторной проверки на Mac.
 Ранее опубликованный `check1` содержит только диагностическую службу и не включает VPN.
 Основной план: [MACOS_DEVELOPMENT_PLAN.md](../../docs/MACOS_DEVELOPMENT_PLAN.md).
 
-Пакет для первой проверки TUN: [DMG `vpn1`](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-vpn1/NagaNetwork-1.2.9-macos-arm64.dmg),
-source `a157c952936171585a56220e23ab3a05bf46ff24`, [native CI PASS](https://github.com/frithTK/Naga-Network-App/actions/runs/39240394882).
+Пакет для повторной проверки TUN: [DMG `vpn2`](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-vpn2/NagaNetwork-1.2.9-macos-arm64.dmg),
+версия `1.2.9+15`, source `f3686913530a7487012f7a62760243b17d29ee33`, [native CI PASS](https://github.com/frithTK/Naga-Network-App/actions/runs/40138410595).
+После замены прежней VPN-сборки один раз перезагрузите Mac, чтобы выгрузить старый helper.
 Сценарий физической проверки приведён в [MACOS_VPN_TEST.md](../../docs/MACOS_VPN_TEST.md).
 
 ```sh

@@ -216,3 +216,35 @@ Darwin ARM64; shell syntax и `git diff --check`. Native typecheck/упаков�
 
 Новый DMG ещё не собран и не опубликован. Native CI и повторный connect/traffic/stop
 на физическом Mac после пересборки остаются открытыми; старый `vpn1` содержит ошибку.
+
+## Проверенный пакет `vpn2`, 2026-10-25
+
+Версия `1.2.9+15`, VPN runtime `vpn-2`, source
+`f3686913530a7487012f7a62760243b17d29ee33`. Все шесть задач
+[native run 40138410595](https://github.com/frithTK/Naga-Network-App/actions/runs/40138410595)
+и оба общих Quality checks (40138410479, 40138413787) прошли. На macOS прошли
+пять новых pipe-сценариев, Swift bridge/helper typecheck, Go tests/vet, privileged
+config checks, Flutter analyzer/tests, подписи и состав `.app`, packaged backend,
+фактический GUI launch/quit, read-only mount и проверка DMG.
+
+Скачанный образ сверён с SHA256SUMS и native reports. Извлечённые из DMG manifest,
+Info.plist, основной executable и все пять ARM64 helpers совпадают с application ZIP;
+engine SHA-256 и bridge CDHash совпадают с manifest. Обезличенный результат:
+[vpn2-package.json](macos-test-results/2026-10-25-vpn2-package.json).
+
+Пакет для повторной проверки:
+[релиз `macos-dev-1.2.9-vpn2`](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-vpn2),
+[DMG](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-vpn2/NagaNetwork-1.2.9-macos-arm64.dmg).
+Размер **42 291 639** байт, SHA-256
+`1585d6c49321959d9ed5ca6cb5447c53f586b1eb1f752a491112206670d2b6cc`.
+После замены прежней VPN-сборки инструкция предусматривает одну перезагрузку,
+чтобы выгрузить старый helper с прежними CDHash. Автоматическая замена службы
+по-прежнему не считается проверенной.
+
+После публикации тот же DMG скачан по публичной ссылке без авторизации; SHA-256
+совпал. [Release launch run 40139038921](https://github.com/frithTK/Naga-Network-App/actions/runs/40139038921)
+прошёл на macOS 14 и macOS 26: копирование из read-only DMG, строгая проверка подписей,
+фактический запуск окна/backend, штатное завершение и остановка дочернего backend.
+
+**Повторный connect/traffic/stop на Mac остаётся открытым.** Успешная сборка
+подтверждает устранение блокирующего чтения, но не передачу VPN-трафика на устройстве.

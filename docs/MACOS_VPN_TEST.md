@@ -1,9 +1,16 @@
-# Первая проверка VPN на Mac
+# Проверка VPN на Mac: vpn2
 
-[Скачать экспериментальный DMG](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-vpn1/NagaNetwork-1.2.9-macos-arm64.dmg)
-· [Файлы сборки и SHA256SUMS](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-vpn1).
-Вход в GitHub не нужен. Source: `a157c952936171585a56220e23ab3a05bf46ff24`;
-[native build/GUI/DMG checks](https://github.com/frithTK/Naga-Network-App/actions/runs/39240394882) прошли.
+[Скачать экспериментальный DMG](https://github.com/frithTK/Naga-Network-App/releases/download/macos-dev-1.2.9-vpn2/NagaNetwork-1.2.9-macos-arm64.dmg)
+· [Файлы сборки и SHA256SUMS](https://github.com/frithTK/Naga-Network-App/releases/tag/macos-dev-1.2.9-vpn2).
+Вход в GitHub не нужен. Версия `1.2.9+15`, VPN runtime `vpn-2`.
+Source: `f3686913530a7487012f7a62760243b17d29ee33`;
+[native build/GUI/DMG checks](https://github.com/frithTK/Naga-Network-App/actions/runs/40138410595) прошли.
+Запуск опубликованного образа дополнительно
+[проверен на macOS 14 и macOS 26](https://github.com/frithTK/Naga-Network-App/actions/runs/40139038921).
+
+В `vpn2` исправлено чтение конфигурации в bridge: `vpn1` мог ждать заполнения блока
+при открытом stdin и завершать старт через ~20 секунд. Пять новых сценариев
+с настоящими pipes прошли на macOS. Повторная физическая проверка требуется.
 
 Экспериментальный этап M00.03/M00.05: приложение соединяет пользовательский backend
 с root-службой и закреплённым sing-box. Успешная сборка не подтверждает передачу
@@ -14,7 +21,9 @@
 Системный proxy, AmneziaWG, olcRTC и автоматическое обновление не входят в этот этап.
 
 1. Скачайте экспериментальный DMG через Safari/Chrome, отключите VPN и завершите
-   прежнюю Naga через Command-Q. Перенесите приложение в «Программы» и откройте его.
+   прежнюю Naga через Command-Q. Перенесите приложение в «Программы» с заменой старой
+   копии. После замены прежней VPN-сборки один раз перезагрузите Mac, чтобы выгрузить
+   helper с прежними подписями, затем откройте приложение. Профили сохраняются.
 2. Импортируйте один рабочий профиль, выберите его узел и режим **TUN**.
 3. Нажмите подключение. При первом запуске разрешите службу Naga в открывшихся
    настройках фоновых элементов. Вернитесь в приложение; при истечении ожидания
