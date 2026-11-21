@@ -295,7 +295,7 @@ func measureSOCKSLatency(ctx context.Context, socksAddr, rawURL string) (int, er
 		},
 	}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Timeout: 12 * time.Second, Transport: transport}
+	client := &http.Client{Timeout: 12 * time.Second, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	if probeJobFromContext(ctx) != nil {
 		return measureHTTPMethodLatency(ctx, client, rawURL, http.MethodHead)
 	}
@@ -336,10 +336,10 @@ func measureHTTPMethodLatency(ctx context.Context, client *http.Client, rawURL, 
 		return 0, err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode != http.StatusNoContent {
 		return 0, fmt.Errorf("probe status %d", resp.StatusCode)
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	elapsed := time.Since(start)
 	if elapsed < time.Millisecond {
 		return 1, nil

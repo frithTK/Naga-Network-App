@@ -22,6 +22,8 @@ class ProfilePreview {
     required this.updateIntervalSeconds,
     required this.canConnect,
     this.olcrtcAvailable = false,
+    this.olcrtcIncomplete = false,
+    this.amneziaUnsupported = false,
   });
 
   final String? profileId;
@@ -36,6 +38,8 @@ class ProfilePreview {
   final int updateIntervalSeconds;
   final bool canConnect;
   final bool olcrtcAvailable;
+  final bool olcrtcIncomplete;
+  final bool amneziaUnsupported;
 
   factory ProfilePreview.fromJson(Map<String, dynamic> json) {
     final rawExpire = json['expire_utc'] as String?;
@@ -52,6 +56,8 @@ class ProfilePreview {
       updateIntervalSeconds: json['update_interval_seconds'] as int? ?? 86400,
       canConnect: json['can_connect'] as bool? ?? false,
       olcrtcAvailable: json['olcrtc_available'] as bool? ?? false,
+      olcrtcIncomplete: json['olcrtc_incomplete'] as bool? ?? false,
+      amneziaUnsupported: json['amnezia_unsupported'] as bool? ?? false,
     );
   }
 }
@@ -73,6 +79,8 @@ class StoredProfileSummary {
     required this.canConnect,
     this.hasSourceUrl = true,
     this.olcrtcAvailable = false,
+    this.olcrtcIncomplete = false,
+    this.amneziaUnsupported = false,
   });
 
   final String id;
@@ -90,6 +98,8 @@ class StoredProfileSummary {
   final bool canConnect;
   final bool hasSourceUrl;
   final bool olcrtcAvailable;
+  final bool olcrtcIncomplete;
+  final bool amneziaUnsupported;
 
   factory StoredProfileSummary.fromJson(Map<String, dynamic> json) {
     return StoredProfileSummary(
@@ -111,6 +121,8 @@ class StoredProfileSummary {
       canConnect: json['can_connect'] as bool? ?? false,
       hasSourceUrl: json['has_source_url'] as bool? ?? true,
       olcrtcAvailable: json['olcrtc_available'] as bool? ?? false,
+      olcrtcIncomplete: json['olcrtc_incomplete'] as bool? ?? false,
+      amneziaUnsupported: json['amnezia_unsupported'] as bool? ?? false,
     );
   }
 }
@@ -203,6 +215,8 @@ class UnifiedNode {
     this.profileRevision = 0,
     this.probePhase = '',
     this.probeReason = '',
+    this.probeSource = '',
+    this.probeTarget = '',
   });
 
   final String id;
@@ -217,6 +231,8 @@ class UnifiedNode {
   final int profileRevision;
   final String probePhase;
   final String probeReason;
+  final String probeSource;
+  final String probeTarget;
 
   factory UnifiedNode.fromJson(Map<String, dynamic> json) {
     return UnifiedNode(
@@ -232,6 +248,8 @@ class UnifiedNode {
       checkedAt: DateTime.tryParse(json['checked_at'] as String? ?? ''),
       probePhase: json['phase'] as String? ?? '',
       probeReason: json['reason'] as String? ?? '',
+      probeSource: json['probe_source'] as String? ?? '',
+      probeTarget: json['probe_target'] as String? ?? '',
     );
   }
 }
@@ -431,6 +449,7 @@ class RuntimeSnapshot {
     required this.activeLatencyMs,
     required this.activeNodeStatus,
     this.failoverMessage,
+    this.accessState,
   });
 
   final String status;
@@ -450,6 +469,7 @@ class RuntimeSnapshot {
   final int? activeLatencyMs;
   final String? activeNodeStatus;
   final String? failoverMessage;
+  final String? accessState;
 
   factory RuntimeSnapshot.fromJson(Map<String, dynamic> json) {
     return RuntimeSnapshot(
@@ -474,6 +494,7 @@ class RuntimeSnapshot {
       activeLatencyMs: _jsonIntOrNull(json['active_latency_ms']),
       activeNodeStatus: json['active_node_status'] as String?,
       failoverMessage: json['failover_message'] as String?,
+      accessState: json['access_state'] as String?,
     );
   }
 }

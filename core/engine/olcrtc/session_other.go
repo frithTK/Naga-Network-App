@@ -10,9 +10,11 @@ func CaptureLink(Execer) (LinkState, error) {
 	return LinkState{}, errRoutingUnsupported
 }
 
-func BypassRoom(Execer, LinkState) error {
+func BypassRoom(Execer, *LinkState) error {
 	return errRoutingUnsupported
 }
+
+func RemoveRoomBypasses(Execer, LinkState) error { return nil }
 
 func EngageDefault(Execer, LinkState) error {
 	return errRoutingUnsupported

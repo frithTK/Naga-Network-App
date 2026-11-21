@@ -38,15 +38,15 @@ func TestPinOlcRoomRestoresOnBypassFailure(t *testing.T) {
 	execer := &recordingExec{out: map[string]string{}}
 	if runtime.GOOS == "windows" {
 		execer.out["route print -4"] = "0.0.0.0 0.0.0.0 192.168.1.1 192.168.1.10 25\n"
-		execer.fail = "route add 203.0.113.10"
+		execer.fail = "route add 203.0.113.11"
 	} else {
 		execer.out["ip -4 route show default"] = "default via 192.168.1.1 dev wlan0 proto dhcp\n"
 		execer.out["ip -6 route show default"] = ""
 		execer.out["resolvectl dns wlan0"] = ""
-		execer.fail = "203.0.113.10/32"
+		execer.fail = "ip route add 203.0.113.11/32"
 	}
 	_, err := pinOlcRoom(execer, &olcprofile.Config{
-		Profiles: []olcprofile.Profile{{Room: "203.0.113.10"}},
+		Profiles: []olcprofile.Profile{{Room: "203.0.113.10"}, {Room: "203.0.113.11"}},
 	})
 	if err == nil {
 		t.Fatal("expected bypass failure")
@@ -56,10 +56,16 @@ func TestPinOlcRoomRestoresOnBypassFailure(t *testing.T) {
 		if !strings.Contains(joined, "route delete 203.0.113.10 mask 255.255.255.255") {
 			t.Fatalf("windows restore missing:\n%s", joined)
 		}
+		if strings.Contains(joined, "route delete 203.0.113.11") || strings.Contains(joined, "route delete 0.0.0.0") {
+			t.Fatalf("untouched routes must not be deleted:\n%s", joined)
+		}
 		return
 	}
 	if !strings.Contains(joined, "ip route del 203.0.113.10/32") {
 		t.Fatalf("linux restore missing:\n%s", joined)
+	}
+	if strings.Contains(joined, "ip route del 203.0.113.11/32") || strings.Contains(joined, "ip route replace default") {
+		t.Fatalf("untouched routes must not be changed:\n%s", joined)
 	}
 }
 

@@ -85,3 +85,25 @@ func TestResolvedDNSManagerRevertsAfterConfigurationFailure(t *testing.T) {
 		t.Fatalf("resolvectl calls = %#v, want %#v", calls, want)
 	}
 }
+
+func TestStopRetriesIncompleteDNSRestore(t *testing.T) {
+	controller := &RuntimeController{}
+	attempts := 0
+	denied := errors.New("access denied")
+	controller.dnsRestore = func() error {
+		attempts++
+		if attempts == 1 {
+			return denied
+		}
+		return nil
+	}
+	if _, err := controller.Stop(); !errors.Is(err, denied) {
+		t.Fatalf("Stop error = %v", err)
+	}
+	if _, err := controller.Stop(); err != nil {
+		t.Fatalf("retry Stop error = %v", err)
+	}
+	if attempts != 2 || controller.dnsRestore != nil {
+		t.Fatal("failed DNS restore was lost or repeated after success")
+	}
+}

@@ -56,6 +56,24 @@ type Profile struct {
 	Subscription   SubscriptionInfo
 	UpdateInterval time.Duration
 	ImportedAt     time.Time
+	AWGTag         string `json:"-"`
+	AWGCountry     string `json:"-"`
+	AWGLegacy      bool   `json:"-"`
+}
+
+// AmneziaTag uses only the country code, not configuration secrets, as identity.
+func AmneziaTag(country string) (string, string) {
+	country = strings.ToUpper(strings.TrimSpace(country))
+	if len(country) != 2 || country[0] < 'A' || country[0] > 'Z' || country[1] < 'A' || country[1] > 'Z' {
+		return "AmneziaWG", ""
+	}
+	names := map[string]string{"PL": "Poland", "LV": "Latvia", "CA": "Canada", "CZ": "Czechia"}
+	name := names[country]
+	if name == "" {
+		name = country
+	}
+	flag := string([]rune{0x1f1e6 + rune(country[0]-'A'), 0x1f1e6 + rune(country[1]-'A')})
+	return fmt.Sprintf("%s %s (%s) AmneziaWG", flag, name, country), name
 }
 
 // SingBoxProfiles returns profiles that can enter MergeProfilesForNetwork.
@@ -86,13 +104,14 @@ func AmneziaWGProfiles(values []Profile) []Profile {
 	out := make([]Profile, 0)
 	for _, value := range values {
 		if env, ok, err := ParseEnvelope(value.Config); ok && err == nil {
-			if len(env.AmneziaConf) == 0 {
-				continue
+			for _, entry := range env.AmneziaConfs {
+				copy := value
+				copy.Engine = EngineAmneziaWG
+				copy.Config = append([]byte(nil), entry.Conf...)
+				copy.AWGTag, copy.AWGCountry = AmneziaTag(entry.Country)
+				copy.AWGLegacy = bytes.Equal(entry.Conf, env.AmneziaConf)
+				out = append(out, copy)
 			}
-			copy := value
-			copy.Engine = EngineAmneziaWG
-			copy.Config = append([]byte(nil), env.AmneziaConf...)
-			out = append(out, copy)
 			continue
 		}
 		if IsAmneziaWG(value) {
@@ -128,7 +147,7 @@ func NodeMetadata(tag, outboundType string) Node {
 		displayTag = tag[separator+2:]
 	}
 	protocol := protocolFromType(outboundType)
-	if strings.EqualFold(displayTag, "AmneziaWG") || strings.EqualFold(tag, "AmneziaWG") {
+	if strings.EqualFold(displayTag, "AmneziaWG") || strings.HasSuffix(displayTag, " AmneziaWG") {
 		protocol = "AmneziaWG"
 	}
 	return Node{

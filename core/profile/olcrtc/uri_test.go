@@ -1,6 +1,7 @@
 package olcrtc
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -92,6 +93,32 @@ func TestRedactStripsKeyAndRoom(t *testing.T) {
 	}
 	if strings.Contains(RedactURI(raw), testKey) || strings.Contains(RedactURI(raw), "meet.example") {
 		t.Fatalf("RedactURI leaked: %s", RedactURI(raw))
+	}
+}
+
+func TestRedactURIDoesNotLeakUnsupportedOrMalformedInputs(t *testing.T) {
+	for _, raw := range []string{
+		"olcrtc://mtslink?vp8channel@https://private.example/room#" + testKey,
+		"olcrtc://jitsi?broken@https://private.example/room#" + testKey,
+	} {
+		redacted := RedactURI(raw)
+		if strings.Contains(redacted, testKey) || strings.Contains(redacted, "private.example") {
+			t.Fatal("unsupported or malformed URI was not redacted")
+		}
+	}
+}
+
+func TestMTSLinkIsRecognizedButCannotStartWithoutProtectedRuntime(t *testing.T) {
+	raw := "olcrtc://mtslink?vp8channel@https://example.org/j/123/456#" + testKey + "$MTS"
+	item, err := ParseURI(raw)
+	if err != nil || item.Provider != ProviderMTSLink || item.Transport != TransportVP8Channel {
+		t.Fatalf("MTS Link recognition failed: %v", err)
+	}
+	if item.RuntimeAllowed {
+		t.Fatal("MTS Link must remain unavailable until its sockets are protected")
+	}
+	if _, err := Build(&Config{Profiles: []Profile{item}}); !errors.Is(err, ErrTransportOff) {
+		t.Fatalf("unsafe runtime must be refused: %v", err)
 	}
 }
 

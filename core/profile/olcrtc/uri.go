@@ -15,6 +15,7 @@ const (
 	ProviderJitsi    = "jitsi"
 	ProviderTelemost = "telemost"
 	ProviderWBStream = "wbstream"
+	ProviderMTSLink  = "mtslink"
 
 	TransportDataChannel  = "datachannel"
 	TransportVP8Channel   = "vp8channel"
@@ -35,8 +36,8 @@ type Profile struct {
 	Room      string
 	Key       string
 	Params    map[string]string
-	// RuntimeAllowed is false for seichannel and videochannel until the
-	// envelope is allowed to start them.
+	// RuntimeAllowed is false for transports or parameters the current
+	// runtime cannot faithfully represent.
 	RuntimeAllowed bool
 }
 
@@ -78,7 +79,7 @@ func ParseURI(raw string) (Profile, error) {
 	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	switch provider {
-	case ProviderJitsi, ProviderTelemost, ProviderWBStream:
+	case ProviderJitsi, ProviderTelemost, ProviderWBStream, ProviderMTSLink:
 	default:
 		return Profile{}, fmt.Errorf("%w: provider", ErrURI)
 	}
@@ -86,7 +87,13 @@ func ParseURI(raw string) (Profile, error) {
 	if err := validateRoom(provider, room); err != nil {
 		return Profile{}, err
 	}
-	allowed := transport == TransportDataChannel || transport == TransportVP8Channel
+	allowed := (transport == TransportDataChannel || transport == TransportVP8Channel) && len(params) == 0
+	// Parsing the new provider does not imply a safe system-tunnel runtime.
+	// Enable it only when its engine and dynamically resolved media sockets
+	// have a verified platform-specific bypass.
+	if provider == ProviderMTSLink {
+		allowed = false
+	}
 	return Profile{
 		Name:           name,
 		Provider:       provider,
@@ -184,7 +191,8 @@ func Redact(err error, secret Profile) error {
 func RedactURI(raw string) string {
 	profile, err := ParseURI(raw)
 	if err != nil {
-		return raw
+		// Invalid or newer-provider URIs can still contain a live room and key.
+		return "[invalid olcrtc URI]"
 	}
 	return redactText(raw, profile.Key, profile.Room)
 }

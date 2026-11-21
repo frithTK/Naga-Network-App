@@ -1,6 +1,15 @@
 package eu.nagavpn.naga_network
 
+import androidx.annotation.Keep
+
 object NagaControl {
+    @Volatile
+    internal var activeVpnService: NagaVpnService? = null
+
+    @Keep
+    @JvmStatic
+    fun protectAwgSocket(fd: Int): Boolean = activeVpnService?.protect(fd) ?: false
+
     @Volatile
     private var loaded = false
 

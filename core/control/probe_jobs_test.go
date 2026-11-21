@@ -166,7 +166,7 @@ func TestProbePoolControlledScalingAndFairness(t *testing.T) {
 					candidates[i] = policy.Candidate{ID: fmt.Sprint(i), ProfileID: fmt.Sprint(i % 10), RuntimeTag: fmt.Sprint(i)}
 				}
 				start := time.Now()
-				if err := c.probeWithRuntime(context.Background(), runtime, candidates, nil); err != nil {
+				if err := c.probeWithRuntime(context.Background(), runtime, candidates, nil, nil); err != nil {
 					t.Fatal(err)
 				}
 				if int(runtime.peak.Load()) > c.manualProbeConcurrency() || len(c.ProbeSnapshot()) != size {

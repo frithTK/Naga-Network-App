@@ -1,6 +1,7 @@
 package olcrtc
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -8,11 +9,28 @@ import (
 	"testing"
 )
 
+func TestYAMLQuotedValuesPreserveSpecialCharacters(t *testing.T) {
+	for _, value := range []string{"room\\path", "name\n  injected: true", "a\r\tb", "quote\"\\tail", "ключ"} {
+		quoted := yamlQuote(value)
+		if strings.ContainsAny(quoted, "\n\r\t") {
+			t.Fatal("quoted value contains an unescaped control character")
+		}
+		var decoded string
+		if err := json.Unmarshal([]byte(quoted), &decoded); err != nil || decoded != value {
+			t.Fatalf("quoted value did not round trip: %q, %v", quoted, err)
+		}
+	}
+	for _, value := range []string{"name\rnext", "name\tnext", "name\\next"} {
+		if !strings.HasPrefix(yamlScalar(value), `"`) {
+			t.Fatal("unsafe plain scalar was not quoted")
+		}
+	}
+}
+
 func TestBuildFlatAndFailover(t *testing.T) {
 	jitsi := Profile{
 		Name: "jitsi", Provider: ProviderJitsi, Transport: TransportDataChannel,
 		Room: "https://meet.example/room", Key: testKey, RuntimeAllowed: true,
-		Params: map[string]string{"secret": "nope"},
 	}
 	doc, err := Build(&Config{Profiles: []Profile{jitsi}})
 	if err != nil {
@@ -23,7 +41,7 @@ func TestBuildFlatAndFailover(t *testing.T) {
 			t.Fatalf("missing %q in\n%s", want, doc.Body)
 		}
 	}
-	if strings.Contains(doc.Body, "secret") || strings.Contains(doc.Body, "profiles:") {
+	if strings.Contains(doc.Body, "profiles:") {
 		t.Fatalf("unexpected body:\n%s", doc.Body)
 	}
 
@@ -55,6 +73,17 @@ func TestBuildRejectsDisabledTransport(t *testing.T) {
 	}}})
 	if err != ErrTransportOff {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestBuildRejectsParametersThatWouldBeDiscarded(t *testing.T) {
+	item := Profile{
+		Provider: ProviderJitsi, Transport: TransportDataChannel,
+		Room: "https://meet.example/room", Key: testKey, RuntimeAllowed: true,
+		Params: map[string]string{"mtu": "1200"},
+	}
+	if _, err := Build(&Config{Profiles: []Profile{item}}); err != ErrTransportOff {
+		t.Fatalf("unsupported parameter was not rejected: %v", err)
 	}
 }
 

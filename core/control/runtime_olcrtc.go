@@ -3,7 +3,9 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -13,6 +15,8 @@ import (
 	"naga.network/core/profile"
 	olcprofile "naga.network/core/profile/olcrtc"
 )
+
+var errOlcCleanupUncertain = errors.New("состояние очистки olcRTC не подтверждено")
 
 func (c *RuntimeController) startOlcRTCLocked(stage *string, value profile.Profile) (RuntimeSnapshot, error) {
 	*stage = "prepare_olcrtc"
@@ -70,7 +74,10 @@ func (c *RuntimeController) startOlcRTCLocked(stage *string, value profile.Profi
 	err = proc.Ready(readyCtx)
 	cancel()
 	if err != nil {
-		_ = proc.Stop()
+		if stopErr := proc.Stop(); stopErr != nil {
+			c.lastError = "olcrtc socks port was not ready; cleanup could not be confirmed"
+			return c.snapshotLocked(), errors.Join(err, errOlcCleanupUncertain)
+		}
 		c.lastError = "olcrtc socks port was not ready"
 		return c.snapshotLocked(), err
 	}
@@ -79,7 +86,9 @@ func (c *RuntimeController) startOlcRTCLocked(stage *string, value profile.Profi
 	if err != nil {
 		_ = proc.Stop()
 		c.lastError = safeRuntimeError(err)
-		return c.snapshotLocked(), err
+		// Platform TUN setup currently has cleanup paths which cannot report
+		// every restore failure. Do not start another session over unknown routes.
+		return c.snapshotLocked(), errors.Join(err, errOlcCleanupUncertain)
 	}
 	if c.Journal != nil {
 		proc.SetLineHandler(func(line string) {
@@ -130,68 +139,78 @@ func (c *RuntimeController) ActiveFetchProxy() string {
 }
 
 func (c *RuntimeController) refreshOlcRTCLocked(value profile.Profile) (RuntimeSnapshot, error) {
-	next := profile.RuntimeOlcRTC(value.Config)
-	if next == nil {
-		if err := c.stopOlcRTCLocked(); err != nil {
-			return c.snapshotLocked(), err
-		}
-		if !olcMatches(value.Config, value.SelectedMode) {
-			value.SelectedMode = ""
-		}
-		if err := c.Store.SaveVersioned(value); err != nil {
-			return c.snapshotLocked(), err
-		}
-		return c.snapshotLocked(), nil
-	}
 	current, err := c.Store.Load(value.ID)
 	if err != nil {
 		return c.snapshotLocked(), err
 	}
-	old := profile.RuntimeOlcRTC(current.Config)
-	if olcSame(old, next) {
+	old := olcProfiles(current.Config)
+	next := olcProfiles(value.Config)
+	if len(next) == 0 {
+		return c.snapshotLocked(), errors.New("обновлённая подписка не содержит доступного узла olcRTC")
+	}
+	oldSelected, _, err := olcprofile.Narrow(&olcprofile.Config{Profiles: old}, current.SelectedMode)
+	if err != nil {
+		return c.snapshotLocked(), err
+	}
+	nextSelected, _, err := olcprofile.Narrow(&olcprofile.Config{Profiles: next}, value.SelectedMode)
+	if err != nil {
+		return c.snapshotLocked(), err
+	}
+	if current.SelectedMode == value.SelectedMode && reflect.DeepEqual(oldSelected.Profiles, nextSelected.Profiles) {
 		if err := c.Store.SaveVersioned(value); err != nil {
 			return c.snapshotLocked(), err
 		}
 		return c.snapshotLocked(), nil
 	}
-	if next == nil {
-		if err := c.Store.SaveVersioned(value); err != nil {
-			return c.snapshotLocked(), err
-		}
-		return c.snapshotLocked(), nil
+	if _, err := olcprofile.Build(nextSelected); err != nil {
+		return c.snapshotLocked(), err
 	}
-	doc, err := olcprofile.Build(next)
+	binary, err := engineolc.DiscoverBinary(c.OlcRTCBinary)
 	if err != nil {
 		return c.snapshotLocked(), err
 	}
-	dir := olcprofile.ConfigDir(c.Store.Root, value.ID)
-	if _, err := olcprofile.WriteFile(dir, doc); err != nil {
+	if err := engineolc.CheckVersion(c.startupContextLocked(), binary); err != nil {
 		return c.snapshotLocked(), err
 	}
-	if err := c.Store.SaveVersioned(value); err != nil {
+	result, err := replaceOlcSession(current, value, c.stopOlcRTCLocked,
+		func(next profile.Profile) (RuntimeSnapshot, error) {
+			stage := "refresh_olcrtc"
+			return c.startOlcRTCLocked(&stage, next)
+		}, c.Store.SaveVersioned, c.snapshotLocked)
+	if err != nil && c.olcProc == nil {
+		c.olcFailed = true
+		c.lastError = safeRuntimeError(err)
 		return c.snapshotLocked(), err
 	}
-	if err := c.stopOlcRTCLocked(); err != nil {
-		return c.snapshotLocked(), err
-	}
-	stage := "refresh_olcrtc"
-	snapshot, err := c.startOlcRTCLocked(&stage, value)
-	if err != nil {
-		return snapshot, err
-	}
-	return snapshot, nil
+	return result, err
 }
 
-func olcSame(left, right *olcprofile.Config) bool {
-	if left == nil || right == nil || len(left.Profiles) != len(right.Profiles) {
-		return false
+// replaceOlcSession does not persist a candidate until it starts. If starting
+// or saving it fails, it attempts to restore the previous owned session.
+func replaceOlcSession(previous, candidate profile.Profile, stop func() error, start func(profile.Profile) (RuntimeSnapshot, error), save func(profile.Profile) error, snapshot func() RuntimeSnapshot) (RuntimeSnapshot, error) {
+	if err := stop(); err != nil {
+		return snapshot(), fmt.Errorf("остановка прежнего olcRTC не завершилась: %w", err)
 	}
-	for i := range left.Profiles {
-		if left.Profiles[i].Key != right.Profiles[i].Key || left.Profiles[i].Room != right.Profiles[i].Room || left.Profiles[i].Provider != right.Profiles[i].Provider {
-			return false
+	result, startErr := start(candidate)
+	if startErr != nil {
+		if errors.Is(startErr, errOlcCleanupUncertain) {
+			return snapshot(), fmt.Errorf("новый olcRTC не запустился; прежний профиль сохранён, состояние сети требует проверки: %w", startErr)
 		}
+		if _, restoreErr := start(previous); restoreErr != nil {
+			return snapshot(), errors.Join(fmt.Errorf("новый olcRTC не запустился: %w", startErr), fmt.Errorf("не удалось восстановить прежний olcRTC: %w", restoreErr))
+		}
+		return snapshot(), fmt.Errorf("новый olcRTC не запустился; прежняя сессия восстановлена: %w", startErr)
 	}
-	return true
+	if saveErr := save(candidate); saveErr != nil {
+		if stopErr := stop(); stopErr != nil {
+			return snapshot(), errors.Join(fmt.Errorf("не удалось сохранить профиль: %w", saveErr), fmt.Errorf("не удалось остановить новую сессию: %w", stopErr))
+		}
+		if _, restoreErr := start(previous); restoreErr != nil {
+			return snapshot(), errors.Join(fmt.Errorf("не удалось сохранить профиль: %w", saveErr), fmt.Errorf("не удалось восстановить прежний olcRTC: %w", restoreErr))
+		}
+		return snapshot(), fmt.Errorf("не удалось сохранить профиль; прежняя сессия восстановлена: %w", saveErr)
+	}
+	return result, nil
 }
 
 func (c *RuntimeController) stopOlcRTCLocked() error {
@@ -273,8 +292,9 @@ func (c *RuntimeController) stopForSwitchLocked() error {
 		return err
 	}
 	if c.runtime == nil {
-		return c.stopSidecarsLocked()
+		return errors.Join(c.restoreDNSLocked(), c.stopSidecarsLocked())
 	}
+	dnsErr := c.restoreDNSLocked()
 	err := c.runtime.Stop()
 	if c.runtimeCancel != nil {
 		c.runtimeCancel()
@@ -285,7 +305,7 @@ func (c *RuntimeController) stopForSwitchLocked() error {
 	c.runtimeAliases = nil
 	c.sessionIDs = nil
 	c.resetProbeStateLocked()
-	return errors.Join(err, c.stopSidecarsLocked())
+	return errors.Join(dnsErr, err, c.stopSidecarsLocked())
 }
 
 func (c *RuntimeController) startSelectedLocked(stage *string, value profile.Profile) (RuntimeSnapshot, error) {

@@ -152,6 +152,7 @@ class NagaVpnService : VpnService() {
             runCatching { ParcelFileDescriptor.adoptFd(fd).close() }
             return false
         }
+        NagaControl.activeVpnService = this
         return true
     }
 
@@ -184,6 +185,9 @@ class NagaVpnService : VpnService() {
     }
 
     private fun teardown() {
+        if (NagaControl.activeVpnService === this) {
+            NagaControl.activeVpnService = null
+        }
         NagaControl.stopRuntime()
         NagaControl.closeTun()
         tun?.close()

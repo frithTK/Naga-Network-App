@@ -4,6 +4,7 @@ package olcrtc
 
 import (
 	"errors"
+	"net"
 	"strings"
 )
 
@@ -23,7 +24,7 @@ func CaptureLink(exec Execer) (LinkState, error) {
 }
 
 // BypassRoom pins each IPv4 room address through the current gateway.
-func BypassRoom(exec Execer, state LinkState) error {
+func BypassRoom(exec Execer, state *LinkState) error {
 	if strings.TrimSpace(state.Route.Gateway) == "" {
 		return errNoWindowsGateway
 	}
@@ -38,8 +39,19 @@ func BypassRoom(exec Execer, state LinkState) error {
 		if err := exec.Run("route", "add", ip4.String(), "mask", "255.255.255.255", state.Route.Gateway); err != nil {
 			return err
 		}
+		state.OwnedRoomIPs = append(state.OwnedRoomIPs, append(net.IP(nil), ip4...))
 	}
 	return nil
+}
+
+func RemoveRoomBypasses(exec Execer, state LinkState) error {
+	var result error
+	for _, ip := range state.OwnedRoomIPs {
+		if ip4 := ip.To4(); ip4 != nil {
+			result = errors.Join(result, exec.Run("route", "delete", ip4.String(), "mask", "255.255.255.255", state.Route.Gateway))
+		}
+	}
+	return result
 }
 
 // EngageDefault adds a metric-1 default via the hev adapter address.
@@ -62,15 +74,5 @@ func RestoreLink(exec Execer, state LinkState) error {
 			_ = exec.Run("route", "change", "0.0.0.0", "mask", "0.0.0.0", gw)
 		}
 	}
-	for _, ip := range state.RoomIPs {
-		if ip == nil {
-			continue
-		}
-		ip4 := ip.To4()
-		if ip4 == nil {
-			continue
-		}
-		_ = exec.Run("route", "delete", ip4.String(), "mask", "255.255.255.255")
-	}
-	return nil
+	return RemoveRoomBypasses(exec, state)
 }

@@ -2,6 +2,8 @@ package amneziawg
 
 import (
 	"context"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -11,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 	awgtun "github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	wgtun "golang.zx2c4.com/wireguard/tun"
@@ -21,12 +22,17 @@ import (
 )
 
 type netstackSidecar struct {
-	mu        sync.Mutex
-	dev       *device.Device
-	tnet      *wgnetstack.Net
-	server    *socksServer
-	addr      string
-	keepalive bool
+	mu         sync.Mutex
+	dev        *device.Device
+	tnet       *wgnetstack.Net
+	server     *socksServer
+	addr       string
+	publicKeys []device.NoisePublicKey
+	dnsRelay   string
+	release    func()
+	stopWatch  context.CancelFunc
+	resolver   endpointResolver
+	alternates []awgcfg.Config
 }
 
 func NewNetstackSidecar() Sidecar {
@@ -40,52 +46,166 @@ func (s *netstackSidecar) Start(ctx context.Context, cfg awgcfg.Config) error {
 	if err := awgcfg.Validate(cfg); err != nil {
 		return err
 	}
+	if err := awgcfg.ValidateRuntime(cfg); err != nil {
+		return err
+	}
+	resolveCtx, cancelResolve := context.WithTimeoutCause(ctx, endpointResolveTimeout, ErrEndpointDNS)
+	resolver := s.resolver
+	if resolver == nil {
+		resolver = platformEndpointResolver()
+	}
+	resolved, err := resolveEndpoints(resolveCtx, cfg, resolver)
+	cancelResolve()
+	if err != nil {
+		return err
+	}
+	return s.startResolved(ctx, resolved, "")
+}
+
+func (s *netstackSidecar) startResolved(ctx context.Context, choices []awgcfg.Config, existingListener string) error {
+	var lastErr error
+	for i, cfg := range choices {
+		if err := s.startDevice(ctx, cfg, choices[i+1:], existingListener); err != nil {
+			lastErr = err
+			if errors.Is(err, ErrUplinkUnavailable) {
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+	return lastErr
+}
+
+func (s *netstackSidecar) startDevice(ctx context.Context, resolved awgcfg.Config, alternates []awgcfg.Config, existingListener string) error {
+	bind, err := newPlatformBind(ctx, resolved)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.dev != nil {
 		return fmt.Errorf("amneziawg sidecar already started")
 	}
-	addrs, err := interfaceAddrs(cfg)
+	if existingListener != "" && s.addr != existingListener {
+		return ErrStopped
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	uapi, err := ipcRequest(resolved)
 	if err != nil {
 		return err
 	}
-	dns := dnsAddrs(cfg)
-	mtu := cfg.MTU
+	publicKeys := make([]device.NoisePublicKey, 0, len(resolved.Peers))
+	for _, peer := range resolved.Peers {
+		key, err := keyToHex(peer.PublicKey)
+		if err != nil {
+			return ErrDeviceConfiguration
+		}
+		var publicKey device.NoisePublicKey
+		if _, err := hex.Decode(publicKey[:], []byte(key)); err != nil {
+			return ErrDeviceConfiguration
+		}
+		publicKeys = append(publicKeys, publicKey)
+	}
+	addrs, err := interfaceAddrs(resolved)
+	if err != nil {
+		return err
+	}
+	dns := dnsAddrs(resolved)
+	if len(dns) == 0 {
+		dns = append(dns, netip.MustParseAddr("1.1.1.1"))
+	}
+	mtu := resolved.MTU
 	if mtu <= 0 {
 		mtu = 1280
 	}
+	release, err := reserveBinding(resolved)
+	if err != nil {
+		return err
+	}
+	started := false
+	defer func() {
+		if !started {
+			release()
+		}
+	}()
 	tun, tnet, err := wgnetstack.CreateNetTUN(addrs, dns, mtu)
 	if err != nil {
 		return fmt.Errorf("amneziawg netstack: %w", err)
 	}
-	dev := device.NewDevice(bridgeTUN{dev: tun}, conn.NewDefaultBind(), device.NewLogger(device.LogLevelError, "awg "))
-	uapi, err := ipcRequest(cfg)
-	if err != nil {
-		dev.Close()
-		_ = tun.Close()
-		return err
-	}
+	// The device owns tun from here. Its Close also closes the underlying TUN.
+	dev := device.NewDevice(bridgeTUN{dev: tun}, bind, device.NewLogger(device.LogLevelSilent, ""))
+	defer func() {
+		if !started {
+			dev.Close()
+		}
+	}()
 	if err := dev.IpcSet(uapi); err != nil {
-		dev.Close()
-		_ = tun.Close()
-		return fmt.Errorf("amneziawg configure: %w", err)
+		return ErrDeviceConfiguration
 	}
 	if err := dev.Up(); err != nil {
-		dev.Close()
-		_ = tun.Close()
 		return fmt.Errorf("amneziawg start: %w", err)
 	}
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		dev.Close()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.prepareLocked(ctx); err != nil {
 		return err
 	}
 	s.dev = dev
 	s.tnet = tnet
-	s.server = serveSOCKS5(listener, tnet.Dial)
-	s.addr = s.server.Addr()
-	s.keepalive = peerHasKeepalive(cfg)
+	s.publicKeys = publicKeys
+	s.alternates = alternates
+	s.dnsRelay = netip.AddrPortFrom(dns[0], 53).String()
+	s.release = release
+	if monitor, ok := bind.(interface {
+		watchUplink(context.Context, func() error, func() error)
+	}); ok {
+		watch, cancel := context.WithCancel(context.Background())
+		s.stopWatch = cancel
+		go monitor.watchUplink(watch, dev.BindUpdate, dev.BindClose)
+	}
+	started = true
 	return nil
+}
+
+func (s *netstackSidecar) Prepare(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.prepareLocked(ctx)
+}
+
+func (s *netstackSidecar) prepareLocked(ctx context.Context) error {
+	if s.server != nil {
+		return nil
+	}
+	var listenerConfig net.ListenConfig
+	listener, err := listenerConfig.Listen(ctx, "tcp4", "127.0.0.1:0")
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = listener.Close()
+		return err
+	}
+	s.server = serveSOCKS5(listener, s.dial)
+	s.addr = s.server.Addr()
+	return nil
+}
+
+func (s *netstackSidecar) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	s.mu.Lock()
+	tnet := s.tnet
+	if network == "udp" && addr == awgcfg.DNSRelayAddr {
+		addr = s.dnsRelay
+	}
+	s.mu.Unlock()
+	if tnet == nil {
+		return nil, ErrNotReady
+	}
+	return tnet.DialContext(ctx, network, addr)
 }
 
 func (s *netstackSidecar) ListenAddr() string {
@@ -95,80 +215,98 @@ func (s *netstackSidecar) ListenAddr() string {
 }
 
 func (s *netstackSidecar) Ready(ctx context.Context) error {
-	s.mu.Lock()
-	addr := s.addr
-	keepalive := s.keepalive
-	s.mu.Unlock()
-	if addr == "" {
-		return ErrNotReady
-	}
-	if err := waitSOCKS(ctx, addr); err != nil {
+	if err := context.Cause(ctx); err != nil {
 		return err
 	}
-	if keepalive {
-		return s.waitHandshake(ctx)
+	ctx, cancel := context.WithTimeoutCause(ctx, handshakeWaitTimeout, ErrHandshakeTimeout)
+	defer cancel()
+	for {
+		s.mu.Lock()
+		addr, dev, alternates := s.addr, s.dev, s.alternates
+		s.mu.Unlock()
+		if dev == nil || addr == "" {
+			return ErrNotReady
+		}
+		attempt := ctx
+		stopAttempt := func() {}
+		if len(alternates) > 0 {
+			deadline, _ := ctx.Deadline()
+			attempt, stopAttempt = context.WithTimeoutCause(ctx, time.Until(deadline)/time.Duration(len(alternates)+1), ErrHandshakeTimeout)
+		}
+		err := s.waitHandshake(attempt, dev, addr)
+		stopAttempt()
+		if !errors.Is(err, ErrHandshakeTimeout) || len(alternates) == 0 || ctx.Err() != nil {
+			return err
+		}
+		s.mu.Lock()
+		if s.dev != dev {
+			s.mu.Unlock()
+			return ErrStopped
+		}
+		s.deactivateLocked()
+		s.mu.Unlock()
+		if err := s.startResolved(ctx, alternates, addr); err != nil {
+			return err
+		}
 	}
-	s.kick(ctx)
-	_, _ = s.handshakeEstablished()
-	return nil
 }
 
-func (s *netstackSidecar) waitHandshake(ctx context.Context) error {
-	deadline := time.Now().Add(handshakeWaitTimeout)
-	if ready, ok := ctx.Deadline(); ok && ready.Before(deadline) {
-		deadline = ready
+func (s *netstackSidecar) waitHandshake(ctx context.Context, dev *device.Device, addr string) error {
+	s.mu.Lock()
+	if s.dev != dev {
+		s.mu.Unlock()
+		return ErrStopped
+	}
+	for _, key := range s.publicKeys {
+		if peer := dev.LookupPeer(key); peer != nil {
+			// Queue a protocol keepalive to trigger the ordinary handshake
+			// timers without sending a test TCP request to an unrelated IP.
+			peer.SendKeepalive()
+		}
+	}
+	s.mu.Unlock()
+	if err := waitSOCKS(ctx, addr); err != nil {
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		return err
 	}
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		ok, err := s.handshakeEstablished()
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
+		ok, err := s.handshakeEstablished(dev)
 		if err != nil {
 			return err
 		}
 		if ok {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return ErrHandshakeTimeout
-		}
 		select {
 		case <-ctx.Done():
-			return ErrHandshakeTimeout
+			return context.Cause(ctx)
 		case <-ticker.C:
 		}
 	}
 }
 
-func (s *netstackSidecar) handshakeEstablished() (bool, error) {
+func (s *netstackSidecar) handshakeEstablished(dev *device.Device) (bool, error) {
 	s.mu.Lock()
-	dev := s.dev
-	s.mu.Unlock()
-	if dev == nil {
+	defer s.mu.Unlock()
+	if s.dev != dev {
 		return false, ErrStopped
 	}
 	dump, err := dev.IpcGet()
 	if err != nil {
-		return false, nil
+		return false, ErrDeviceConfiguration
 	}
 	return lastHandshakeUnix(dump) > 0, nil
 }
 
-func (s *netstackSidecar) kick(ctx context.Context) {
-	s.mu.Lock()
-	tnet := s.tnet
-	s.mu.Unlock()
-	if tnet == nil {
-		return
-	}
-	dctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	conn, err := tnet.DialContext(dctx, "tcp", "1.1.1.1:443")
-	if err == nil {
-		_ = conn.Close()
-	}
-}
-
 func lastHandshakeUnix(dump string) int64 {
+	var latest int64
 	for _, line := range strings.Split(dump, "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
@@ -178,21 +316,11 @@ func lastHandshakeUnix(dump string) int64 {
 			continue
 		}
 		n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
-		if err != nil {
-			return 0
-		}
-		return n
-	}
-	return 0
-}
-
-func peerHasKeepalive(cfg awgcfg.Config) bool {
-	for _, peer := range cfg.Peers {
-		if peer.PersistentKeepalive > 0 {
-			return true
+		if err == nil && n > latest {
+			latest = n
 		}
 	}
-	return false
+	return latest
 }
 
 func (s *netstackSidecar) Stop() error {
@@ -203,13 +331,34 @@ func (s *netstackSidecar) Stop() error {
 		result = s.server.Close()
 		s.server = nil
 	}
+	s.deactivateLocked()
+	s.addr = ""
+	return result
+}
+
+func (s *netstackSidecar) Deactivate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deactivateLocked()
+}
+
+func (s *netstackSidecar) deactivateLocked() {
+	if s.stopWatch != nil {
+		s.stopWatch()
+		s.stopWatch = nil
+	}
 	if s.dev != nil {
 		s.dev.Close()
 		s.dev = nil
 	}
+	if s.release != nil {
+		s.release()
+		s.release = nil
+	}
 	s.tnet = nil
-	s.addr = ""
-	return result
+	s.dnsRelay = ""
+	s.publicKeys = nil
+	s.alternates = nil
 }
 
 // bridgeTUN adapts wireguard-go's userspace TUN to amneziawg-go's Device.
@@ -273,6 +422,10 @@ func dnsAddrs(cfg awgcfg.Config) []netip.Addr {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			continue
+		}
+		host, _, err := net.SplitHostPort(raw)
+		if err == nil {
+			raw = host
 		}
 		addr, err := netip.ParseAddr(raw)
 		if err != nil {

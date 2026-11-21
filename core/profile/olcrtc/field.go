@@ -13,6 +13,7 @@ type Config struct {
 	Label    string
 	Profiles []Profile
 	URIs     []string
+	Ignored  int
 }
 
 type fieldFile struct {
@@ -32,6 +33,9 @@ type fieldProfile struct {
 // ParseField parses the envelope olcrtc value. A missing value or JSON null
 // returns nil, nil. Any other failure is an error of this field only.
 func ParseField(raw []byte) (*Config, error) {
+	if len(raw) > maxDocumentBytes {
+		return nil, fmt.Errorf("%w: document too large", ErrURI)
+	}
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil, nil
@@ -40,43 +44,57 @@ func ParseField(raw []byte) (*Config, error) {
 	if err := json.Unmarshal(trimmed, &document); err != nil {
 		return nil, errors.New("olcrtc field is invalid")
 	}
-	cfg := &Config{Label: strings.TrimSpace(document.Label), URIs: append([]string(nil), document.URIs...)}
+	cfg := &Config{Label: strings.TrimSpace(document.Label)}
 	if len(document.Profiles) == 0 {
 		if len(document.URIs) == 0 {
 			return nil, errors.New("olcrtc field has no profiles")
 		}
-		profile, err := ParseURI(document.URIs[0])
-		if err != nil {
-			return nil, err
+		if len(document.URIs) > maxDocumentProfiles {
+			return nil, fmt.Errorf("%w: too many profiles", ErrURI)
 		}
-		if !profile.RuntimeAllowed {
-			return nil, ErrTransportOff
+		for _, uri := range document.URIs {
+			if len(uri) > maxDocumentLineBytes {
+				return nil, fmt.Errorf("%w: line too large", ErrURI)
+			}
+			profile, err := ParseURI(uri)
+			if err != nil || !profile.RuntimeAllowed {
+				cfg.Ignored++
+				continue
+			}
+			cfg.Profiles = append(cfg.Profiles, profile)
+			cfg.URIs = append(cfg.URIs, uri)
 		}
-		cfg.Profiles = []Profile{profile}
 		return cfg, nil
 	}
-	key := ""
-	for _, item := range document.Profiles {
+	if len(document.Profiles) > maxDocumentProfiles || len(document.URIs) > maxDocumentProfiles {
+		return nil, fmt.Errorf("%w: too many profiles", ErrURI)
+	}
+	if len(document.URIs) > len(document.Profiles) {
+		return nil, errors.New("olcrtc uri list exceeds profiles")
+	}
+	for i, item := range document.Profiles {
 		profile, err := profileFromFields(item)
 		if err != nil {
-			return nil, err
+			cfg.Ignored++
+			continue
 		}
-		if key == "" {
-			key = profile.Key
-		} else if profile.Key != key {
-			return nil, errors.New("olcrtc profiles use different keys")
+		if i < len(document.URIs) {
+			uri := document.URIs[i]
+			if len(uri) > maxDocumentLineBytes {
+				return nil, fmt.Errorf("%w: line too large", ErrURI)
+			}
+			parsed, err := ParseURI(uri)
+			if err != nil || parsed.Provider != profile.Provider || parsed.Room != profile.Room || parsed.Key != profile.Key || parsed.Transport != profile.Transport {
+				return nil, errors.New("olcrtc uri does not match its profile")
+			}
+			if !parsed.RuntimeAllowed {
+				cfg.Ignored++
+				continue
+			}
+			profile.Params = parsed.Params
+			cfg.URIs = append(cfg.URIs, uri)
 		}
 		cfg.Profiles = append(cfg.Profiles, profile)
-	}
-	if len(document.URIs) > 0 {
-		first, err := ParseURI(document.URIs[0])
-		if err != nil {
-			return nil, err
-		}
-		head := cfg.Profiles[0]
-		if first.Provider != head.Provider || first.Room != head.Room || first.Key != head.Key {
-			return nil, errors.New("olcrtc uri does not match the first profile")
-		}
 	}
 	return cfg, nil
 }

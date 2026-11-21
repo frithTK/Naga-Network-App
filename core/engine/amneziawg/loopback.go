@@ -31,7 +31,7 @@ func (s *LoopbackSidecar) Start(_ context.Context, _ awgcfg.Config) error {
 	if err != nil {
 		return err
 	}
-	s.server = serveSOCKS5(listener, net.Dial)
+	s.server = serveSOCKS5(listener, (&net.Dialer{}).DialContext)
 	s.addr = s.server.Addr()
 	s.started = true
 	return nil

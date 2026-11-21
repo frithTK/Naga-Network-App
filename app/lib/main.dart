@@ -16,6 +16,7 @@ import 'subscription_fetch.dart';
 import 'subscription_link.dart';
 import 'macos_backend.dart';
 import 'macos_diagnostics.dart';
+import 'system_connectivity.dart';
 
 part 'ui/home.dart';
 part 'ui/components.dart';
@@ -2632,6 +2633,14 @@ class _DashboardPageState extends State<DashboardPage>
         if (mounted) unawaited(_syncTray());
       } else {
         await _controlPlane.selectMode(node.profileId, node.tag);
+        if (mounted) {
+          for (final profile in _profiles) {
+            if (profile.id == node.profileId) {
+              setState(() => _adoptProfile(profile));
+              break;
+            }
+          }
+        }
         await _loadNodes(node.profileId);
         if (_isConnected) {
           final runtime = await _controlPlane.runtimeStatus();
@@ -2687,6 +2696,8 @@ class _DashboardPageState extends State<DashboardPage>
       updateIntervalSeconds: summary.updateIntervalSeconds,
       canConnect: summary.canConnect,
       olcrtcAvailable: summary.olcrtcAvailable,
+      olcrtcIncomplete: summary.olcrtcIncomplete,
+      amneziaUnsupported: summary.amneziaUnsupported,
     );
   }
 
@@ -3557,6 +3568,18 @@ class _DashboardPageState extends State<DashboardPage>
             Text('Движок: ${preview.engine}'),
             Text('Лимит: $limit'),
             Text('Действует до: $expiry'),
+            if (preview.olcrtcIncomplete) ...[
+              const SizedBox(height: 12),
+              const Text(
+                'Некоторые узлы olcRTC не поддерживаются или содержат ошибки и не будут доступны.',
+              ),
+            ],
+            if (preview.amneziaUnsupported) ...[
+              const SizedBox(height: 12),
+              const Text(
+                'В конфигурации AmneziaWG есть неподдерживаемые параметры; этот узел не подключится.',
+              ),
+            ],
           ],
         ),
         actions: [
@@ -3648,9 +3671,21 @@ class _DashboardPageState extends State<DashboardPage>
       }
       _scheduleProfileUpdate();
       await _reloadProfiles();
-      if (mounted && !silent) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Профиль обновлён.')));
+      if (mounted &&
+          (!silent || preview.olcrtcIncomplete || preview.amneziaUnsupported)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              preview.olcrtcIncomplete && preview.amneziaUnsupported
+                  ? 'Профиль обновлён, но некоторые узлы olcRTC и AmneziaWG недоступны.'
+                  : preview.olcrtcIncomplete
+                  ? 'Профиль обновлён, но некоторые узлы olcRTC недоступны.'
+                  : preview.amneziaUnsupported
+                  ? 'Профиль обновлён, но узел AmneziaWG недоступен.'
+                  : 'Профиль обновлён.',
+            ),
+          ),
+        );
       }
     } on ControlPlaneException catch (error) {
       if (!mounted || silent) return;
@@ -3824,8 +3859,6 @@ class _DashboardPageState extends State<DashboardPage>
                             trafficModeError: _trafficModeError,
                             controlPlaneReachable: _controlPlaneReachable,
                             nodes: _unifiedNodes,
-                            networkClass:
-                                _effectiveConnectionPolicy.networkClass,
                           ),
                           1 => _ProfilesPage(
                             profileName: _profileName,
@@ -4278,16 +4311,26 @@ String? nagaVisibleFailover(String? message, String displayedNode) {
 }
 
 String nagaNodePingLabel(UnifiedNode node) {
+  if (node.probePhase == 'queued') return 'очередь';
+  if (node.probePhase == 'preparing' || node.probePhase == 'checking') {
+    return 'проверяется';
+  }
+  if (node.probePhase == 'cancelled') return 'отмена';
+  if (node.probePhase == 'skipped') return 'пропуск';
   final latency = node.latencyMs;
   if (latency != null && latency > 0) {
     return '$latency мс';
   }
   if (node.probeStatus == 'failed') {
-    return 'нет ответа';
+    return switch (node.probeReason) {
+      'awg_handshake_timeout' => 'нет рукопожатия',
+      'awg_endpoint_dns' => 'ошибка DNS сервера',
+      'awg_endpoint_invalid' || 'awg_configuration' => 'ошибка профиля',
+      'https_timeout' => 'тайм-аут HTTPS',
+      'https_failed' || 'https_status' => 'ошибка HTTPS',
+      _ => 'нет ответа',
+    };
   }
-  if (node.probePhase == 'queued') return 'очередь';
-  if (node.probePhase == 'cancelled') return 'отмена';
-  if (node.probePhase == 'skipped') return 'пропуск';
   return '—';
 }
 
@@ -4335,37 +4378,21 @@ String nagaNodeProtocolLabel(UnifiedNode node) {
 int? nagaHomeLatencyMs({
   int? runtimeLatencyMs,
   required String selectedNode,
-  String? activeNode,
   required List<UnifiedNode> nodes,
-  String networkClass = 'unknown',
+  bool connected = false,
 }) {
-  if (runtimeLatencyMs != null && runtimeLatencyMs > 0) {
-    return runtimeLatencyMs;
+  if (connected) {
+    return runtimeLatencyMs != null && runtimeLatencyMs > 0
+        ? runtimeLatencyMs
+        : null;
   }
-  final names = <String>{
-    if (selectedNode.isNotEmpty) selectedNode,
-    if (activeNode != null && activeNode.isNotEmpty) activeNode,
-  };
-  for (final node in nodes) {
-    if (names.contains(node.tag) || names.contains(node.runtimeTag)) {
-      final latency = node.latencyMs;
-      if (latency != null && latency > 0) {
-        return latency;
-      }
-    }
-  }
-  final automatic =
-      selectedNode.isEmpty || selectedNode.toLowerCase() == 'auto';
-  if (!automatic) {
-    return null;
-  }
-  for (final node in recommendedUnifiedNodes(nodes, network: networkClass)) {
-    final latency = node.latencyMs;
-    if (latency != null && latency > 0) {
-      return latency;
-    }
-  }
-  return null;
+  if (selectedNode.isEmpty || selectedNode.toLowerCase() == 'auto') return null;
+  final matching = nodes.where(
+    (node) => node.tag == selectedNode || node.runtimeTag == selectedNode,
+  );
+  if (matching.length != 1) return null;
+  final latency = matching.single.latencyMs;
+  return latency != null && latency > 0 ? latency : null;
 }
 
 UnifiedNode nagaPreferProbedNode(UnifiedNode incoming, UnifiedNode? probed) {
@@ -4392,7 +4419,11 @@ UnifiedNode nagaPreferProbedNode(UnifiedNode incoming, UnifiedNode? probed) {
       checkedAt: probed.checkedAt,
       profileRevision: incoming.profileRevision,
       probePhase: incoming.probePhase,
-      probeReason: incoming.probeReason,
+      probeReason: incoming.probeReason.isEmpty
+          ? probed.probeReason
+          : incoming.probeReason,
+      probeSource: probed.probeSource,
+      probeTarget: probed.probeTarget,
     );
   }
   return incoming;
@@ -4718,11 +4749,20 @@ class _NagaNodesViewState extends State<NagaNodesView> {
       'vpn_required' => 'Включите VPN для проверки на этой платформе.',
       'engine_unavailable' => 'Движок этого протокола недоступен.',
       'timeout' => 'Сервер не ответил за отведённое время.',
+      'awg_handshake_timeout' => 'Истекло время ожидания рукопожатия AWG.',
+      'awg_endpoint_dns' => 'Не удалось разрешить имя AWG-сервера.',
+      'awg_in_use' => 'Порт или ключ используется другим туннелем Naga.',
+      'awg_uplink_unavailable' => 'Не удалось подготовить внешний маршрут AWG.',
+      'https_timeout' => 'Истекло время HTTPS-проверки через туннель.',
+      'https_status' => 'Контрольный сайт не вернул ожидаемый HTTP 204.',
       'cancelled' => 'Проверка отменена.',
       'timed_out' => 'Истёк общий срок проверки.',
       _ => '',
     };
     final pingTooltip = [
+      if (node.probeStatus == 'healthy') 'HTTPS-задержка через этот узел. Системный маршрут проверяется отдельно.',
+      if (node.probeTarget == 'gstatic') 'Контрольная цель: Google.',
+      if (node.probeTarget == 'cloudflare') 'Контрольная цель: Cloudflare.',
       if (explanation.isNotEmpty) explanation,
       if (checked != null && checked.year > 2000)
         'Последний замер: ${checked.day}.${checked.month}.${checked.year} ${checked.hour.toString().padLeft(2, '0')}:${checked.minute.toString().padLeft(2, '0')}',
@@ -6170,6 +6210,7 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
   RuntimeSnapshot? _runtime;
   List<DiagnosticLogEntry> _logs = const [];
   String? _checkError;
+  bool? _systemHTTPS;
   Timer? _statusPoller;
 
   @override
@@ -6195,6 +6236,7 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
       final runtime = await _controlPlane.runtimeStatus();
       if (!mounted) return;
       setState(() {
+        if (!_sameDiagnosticSession(_runtime, runtime)) _systemHTTPS = null;
         _serviceHealthy = healthy;
         _runtime = runtime;
         _checkError = null;
@@ -6204,6 +6246,7 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
       setState(() {
         _serviceHealthy = false;
         _runtime = null;
+        _systemHTTPS = null;
         _checkError = error.message;
       });
     } finally {
@@ -6221,6 +6264,10 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
     try {
       final healthy = await _controlPlane.health();
       final runtime = await _controlPlane.runtimeStatus();
+      final systemHTTPS = runtime.status == 'connected'
+          ? await checkSystemConnectivity()
+          : null;
+      final currentRuntime = await _controlPlane.runtimeStatus();
       var logs = const <DiagnosticLogEntry>[];
       try {
         logs = await _controlPlane.diagnosticLogs();
@@ -6231,7 +6278,10 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
       if (!mounted) return;
       setState(() {
         _serviceHealthy = healthy;
-        _runtime = runtime;
+        _runtime = currentRuntime;
+        _systemHTTPS = _sameDiagnosticSession(runtime, currentRuntime)
+            ? systemHTTPS
+            : null;
         _logs = logs;
         _loading = false;
       });
@@ -6240,6 +6290,7 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
       setState(() {
         _serviceHealthy = false;
         _runtime = null;
+        _systemHTTPS = null;
         _checkError = error.message;
         _loading = false;
       });
@@ -6272,6 +6323,7 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
                       serviceHealthy: _serviceHealthy,
                       runtime: runtime,
                       checkError: _checkError,
+                      systemHTTPS: _systemHTTPS,
                     ),
             ),
           ),
@@ -6421,6 +6473,14 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
   }
 }
 
+bool _sameDiagnosticSession(RuntimeSnapshot? a, RuntimeSnapshot? b) =>
+    a?.status == 'connected' &&
+    b?.status == 'connected' &&
+    a?.profileId == b?.profileId &&
+    a?.engine == b?.engine &&
+    a?.sessionStartedAt == b?.sessionStartedAt &&
+    a?.activeNode == b?.activeNode;
+
 String diagnosticsCopyText({
   required bool? serviceHealthy,
   required RuntimeSnapshot? runtime,
@@ -6459,11 +6519,13 @@ class DiagnosticsStatusCard extends StatelessWidget {
     required this.serviceHealthy,
     required this.runtime,
     this.checkError,
+    this.systemHTTPS,
   });
 
   final bool? serviceHealthy;
   final RuntimeSnapshot? runtime;
   final String? checkError;
+  final bool? systemHTTPS;
 
   @override
   Widget build(BuildContext context) {
@@ -6495,6 +6557,17 @@ class DiagnosticsStatusCard extends StatelessWidget {
           title: 'VPN-соединение',
           detail: runtimeLabel,
           ok: connected,
+        ),
+        const Divider(height: 24, color: _line),
+        _DiagnosticLine(
+          icon: Icons.language_rounded,
+          title: 'HTTPS через систему',
+          detail: systemHTTPS == null
+              ? 'Не проверено'
+              : systemHTTPS!
+              ? 'Ответ получен · маршрут через VPN не подтверждён'
+              : 'Ответ не получен',
+          ok: systemHTTPS == true,
         ),
         const Divider(height: 24, color: _line),
         _DiagnosticLine(

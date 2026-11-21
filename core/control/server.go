@@ -104,6 +104,8 @@ type Preview struct {
 	UpdateIntervalSeconds int64  `json:"update_interval_seconds"`
 	CanConnect            bool   `json:"can_connect"`
 	OlcRTCAvailable       bool   `json:"olcrtc_available"`
+	OlcRTCIncomplete      bool   `json:"olcrtc_incomplete,omitempty"`
+	AmneziaUnsupported    bool   `json:"amnezia_unsupported,omitempty"`
 }
 
 type errorResponse struct {
@@ -121,21 +123,23 @@ type shareResponse struct {
 }
 
 type ProfileSummary struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	ProviderName    string `json:"provider_name,omitempty"`
-	Engine          string `json:"engine"`
-	ImportedAt      string `json:"imported_at"`
-	UpdatedAt       string `json:"updated_at,omitempty"`
-	UploadBytes     int64  `json:"upload_bytes"`
-	DownloadBytes   int64  `json:"download_bytes"`
-	TotalBytes      int64  `json:"total_bytes"`
-	Unlimited       bool   `json:"unlimited"`
-	UpdateInterval  int64  `json:"update_interval_seconds"`
-	ExpireUTC       string `json:"expire_utc,omitempty"`
-	CanConnect      bool   `json:"can_connect"`
-	HasSourceURL    bool   `json:"has_source_url"`
-	OlcRTCAvailable bool   `json:"olcrtc_available,omitempty"`
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	ProviderName       string `json:"provider_name,omitempty"`
+	Engine             string `json:"engine"`
+	ImportedAt         string `json:"imported_at"`
+	UpdatedAt          string `json:"updated_at,omitempty"`
+	UploadBytes        int64  `json:"upload_bytes"`
+	DownloadBytes      int64  `json:"download_bytes"`
+	TotalBytes         int64  `json:"total_bytes"`
+	Unlimited          bool   `json:"unlimited"`
+	UpdateInterval     int64  `json:"update_interval_seconds"`
+	ExpireUTC          string `json:"expire_utc,omitempty"`
+	CanConnect         bool   `json:"can_connect"`
+	HasSourceURL       bool   `json:"has_source_url"`
+	OlcRTCAvailable    bool   `json:"olcrtc_available,omitempty"`
+	OlcRTCIncomplete   bool   `json:"olcrtc_incomplete,omitempty"`
+	AmneziaUnsupported bool   `json:"amnezia_unsupported,omitempty"`
 }
 
 type NodeSummary struct {
@@ -164,6 +168,9 @@ type UnifiedNodeSummary struct {
 	LatencyMS       int       `json:"latency_ms,omitempty"`
 	ProbeStatus     string    `json:"probe_status,omitempty"`
 	CheckedAt       time.Time `json:"checked_at,omitempty"`
+	ProbeReason     string    `json:"reason,omitempty"`
+	ProbeSource     string    `json:"probe_source,omitempty"`
+	ProbeTarget     string    `json:"probe_target,omitempty"`
 }
 
 type diagnosticsLogResponse struct {
@@ -808,6 +815,35 @@ func (s Server) refreshProfile(w http.ResponseWriter, r *http.Request, profileID
 			return
 		}
 	}
+	// Do not discard an explicitly selected room or restart an active olcRTC
+	// session from a partial subscription. The previous stored profile remains
+	// usable until the subscription is complete or the user selects another node.
+	olcSelection := value.SelectedMode
+	if strings.TrimSpace(olcSelection) == "" && value.Engine == profile.EngineOlcRTC {
+		olcSelection = olcrtc.NodeTag
+	}
+	if olcMatches(value.Config, olcSelection) {
+		mapped, err := remapOlcSelection(value.Config, snapshot.Config, olcSelection)
+		if err != nil {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		if s.Runtime != nil && s.Runtime.IsActive(profileID) && olcRTCIncomplete(snapshot.Config) {
+			writeError(w, http.StatusUnprocessableEntity, "не удалось безопасно обновить активный olcRTC: некоторые узлы подписки недоступны")
+			return
+		}
+		if value.SelectedMode != "" {
+			value.SelectedMode = mapped
+		}
+	}
+	if envelopeAmneziaSelected(value.Config, value.SelectedMode) && value.SelectedMode != awgcfg.SelectorTag {
+		mapped, ok := remapAmneziaSelection(value.Config, snapshot.Config, value.SelectedMode)
+		if !ok {
+			writeError(w, http.StatusUnprocessableEntity, "выбранный узел AmneziaWG отсутствует в обновлённой подписке")
+			return
+		}
+		value.SelectedMode = mapped
+	}
 	now := time.Now
 	if s.Now != nil {
 		now = s.Now
@@ -986,7 +1022,7 @@ func (s Server) profileNodes(value profile.Profile) ProfileNodes {
 	}
 	options, err := profile.InspectMode(profile.RuntimeSingBoxConfig(value.Config))
 	if err != nil {
-		if len(profile.RuntimeAmneziaConf(value.Config)) == 0 {
+		if len(profile.RuntimeAmneziaConf(value.Config)) == 0 && !olcrtcAvailable(value.Config) {
 			return ProfileNodes{ProfileID: value.ID, Nodes: []NodeSummary{}}
 		}
 		options = profile.ModeOptions{}
@@ -1000,15 +1036,14 @@ func (s Server) profileNodes(value profile.Profile) ProfileNodes {
 		nodes = append(nodes, nodeSummary(node, selected))
 	}
 	nodes = append(nodes, olcNodeSummaries(value.Config, selected)...)
-	if len(profile.RuntimeAmneziaConf(value.Config)) > 0 {
-		if selected == "" {
-			selected = awgcfg.LeafTag
-		}
+	for _, entry := range profile.AmneziaWGProfiles([]profile.Profile{value}) {
+		tag := awgSourceTag(entry)
 		nodes = append(nodes, NodeSummary{
-			Tag:      awgcfg.LeafTag,
+			Tag:      tag,
 			Type:     "amneziawg",
 			Protocol: profile.ProtocolFromType("amneziawg"),
-			Selected: selected == awgcfg.LeafTag,
+			Country:  entry.AWGCountry,
+			Selected: awgSelectionMatches(entry, selected),
 		})
 	}
 	return ProfileNodes{ProfileID: value.ID, Mode: options.Tag, Nodes: nodes}
@@ -1136,20 +1171,22 @@ func (s Server) listProfiles(w http.ResponseWriter) {
 	summaries := make([]ProfileSummary, 0, len(values))
 	for _, value := range values {
 		summary := ProfileSummary{
-			ID:              value.ID,
-			Name:            value.Name,
-			ProviderName:    value.ProviderName,
-			Engine:          string(value.Engine),
-			ImportedAt:      value.ImportedAt.UTC().Format(time.RFC3339),
-			UpdatedAt:       profileUpdatedAt(value),
-			UploadBytes:     value.Subscription.Upload,
-			DownloadBytes:   value.Subscription.Download,
-			TotalBytes:      value.Subscription.Total,
-			Unlimited:       value.Subscription.Unlimited(),
-			UpdateInterval:  updateIntervalSeconds(value.UpdateInterval),
-			CanConnect:      !value.Subscription.Expired(now()),
-			HasSourceURL:    strings.TrimSpace(value.SourceURL) != "",
-			OlcRTCAvailable: olcrtcAvailable(value.Config),
+			ID:                 value.ID,
+			Name:               value.Name,
+			ProviderName:       value.ProviderName,
+			Engine:             string(value.Engine),
+			ImportedAt:         value.ImportedAt.UTC().Format(time.RFC3339),
+			UpdatedAt:          profileUpdatedAt(value),
+			UploadBytes:        value.Subscription.Upload,
+			DownloadBytes:      value.Subscription.Download,
+			TotalBytes:         value.Subscription.Total,
+			Unlimited:          value.Subscription.Unlimited(),
+			UpdateInterval:     updateIntervalSeconds(value.UpdateInterval),
+			CanConnect:         !value.Subscription.Expired(now()),
+			HasSourceURL:       strings.TrimSpace(value.SourceURL) != "",
+			OlcRTCAvailable:    olcrtcAvailable(value.Config),
+			OlcRTCIncomplete:   olcRTCIncomplete(value.Config),
+			AmneziaUnsupported: amneziaRuntimeUnsupported(value.Config),
 		}
 		if !value.Subscription.Expire.IsZero() {
 			summary.ExpireUTC = value.Subscription.Expire.UTC().Format(time.RFC3339)
@@ -1303,6 +1340,7 @@ func (s Server) writeUnifiedNodes(w http.ResponseWriter, candidates []policy.Can
 			node.ProbeStatus = string(entry.Status)
 			node.LatencyMS = entry.LatencyMS
 			node.CheckedAt = entry.CheckedAt
+			node.ProbeReason, node.ProbeSource, node.ProbeTarget = entry.Reason, entry.Source, entry.Target
 		}
 		nodes = append(nodes, node)
 	}
@@ -1593,8 +1631,12 @@ func (s Server) validateSnapshot(r *http.Request, snapshot subscription.Snapshot
 
 func (s Server) validateParsingSnapshot(r *http.Request, snapshot subscription.Snapshot) (subscription.Snapshot, error) {
 	if olcrtc.IsDocument(snapshot.Config) {
-		if _, err := olcrtc.ParseDocument(snapshot.Config); err != nil {
+		cfg, err := olcrtc.ParseDocument(snapshot.Config)
+		if err != nil {
 			return subscription.Snapshot{}, err
+		}
+		if cfg.Ignored > 0 && s.Journal != nil {
+			s.Journal.Warn("subscription", "olcrtc_ignored", fmt.Sprintf("olcrtc: %d unsupported or invalid nodes", cfg.Ignored), nil)
 		}
 		return snapshot, nil
 	}
@@ -1611,8 +1653,8 @@ func (s Server) validateParsingSnapshot(r *http.Request, snapshot subscription.S
 				return subscription.Snapshot{}, errors.New("profile failed engine validation")
 			}
 		}
-		if len(env.AmneziaConf) > 0 {
-			if _, err := awgcfg.Parse(env.AmneziaConf); err != nil {
+		for _, entry := range env.AmneziaConfs {
+			if _, err := awgcfg.Parse(entry.Conf); err != nil {
 				return subscription.Snapshot{}, err
 			}
 		}
@@ -1649,10 +1691,37 @@ func (s Server) validateParsingSnapshot(r *http.Request, snapshot subscription.S
 }
 
 func envelopeAmneziaSelected(config []byte, mode string) bool {
-	if len(profile.RuntimeAmneziaConf(config)) == 0 {
-		return false
+	values := profile.AmneziaWGProfiles([]profile.Profile{{Config: config}})
+	if mode == awgcfg.SelectorTag {
+		return len(values) > 0
 	}
-	return mode == awgcfg.LeafTag || mode == awgcfg.SelectorTag
+	for _, value := range values {
+		if awgSelectionMatches(value, mode) {
+			return true
+		}
+	}
+	return false
+}
+
+func remapAmneziaSelection(oldConfig, newConfig []byte, mode string) (string, bool) {
+	oldValues := profile.AmneziaWGProfiles([]profile.Profile{{Config: oldConfig}})
+	newValues := profile.AmneziaWGProfiles([]profile.Profile{{Config: newConfig}})
+	for _, old := range oldValues {
+		if !awgSelectionMatches(old, mode) {
+			continue
+		}
+		match := ""
+		for _, current := range newValues {
+			if old.AWGTag == current.AWGTag || (old.AWGTag == awgcfg.LeafTag && bytes.Equal(old.Config, current.Config)) {
+				if match != "" {
+					return "", false
+				}
+				match = awgSourceTag(current)
+			}
+		}
+		return match, match != ""
+	}
+	return "", false
 }
 
 func snapshotEngine(snapshot subscription.Snapshot) profile.Engine {
@@ -1691,6 +1760,33 @@ func olcrtcAvailable(raw []byte) bool {
 	return profile.RuntimeOlcRTC(raw) != nil
 }
 
+func olcRTCIncomplete(raw []byte) bool {
+	if olcrtc.IsDocument(raw) {
+		cfg, err := olcrtc.ParseDocument(raw)
+		return err != nil || (cfg != nil && cfg.Ignored > 0)
+	}
+	return profile.OlcRTCError(raw) != nil
+}
+
+func amneziaRuntimeUnsupported(raw []byte) bool {
+	for _, value := range profile.AmneziaWGProfiles([]profile.Profile{{Config: raw}}) {
+		cfg, err := awgcfg.Parse(value.Config)
+		if err == nil && awgcfg.ValidateRuntime(cfg) != nil {
+			return true
+		}
+	}
+	conf := profile.RuntimeAmneziaConf(raw)
+	if len(conf) == 0 {
+		format, err := awgcfg.Classify(raw)
+		if err != nil || format != awgcfg.FormatAmneziaWG {
+			return false
+		}
+		conf = raw
+	}
+	cfg, err := awgcfg.Parse(conf)
+	return err == nil && awgcfg.ValidateRuntime(cfg) != nil
+}
+
 func defaultOlcRTCMode(snapshot subscription.Snapshot) string {
 	if snapshotEngine(snapshot) == profile.EngineOlcRTC {
 		return olcrtc.NodeTag
@@ -1714,6 +1810,8 @@ func (s Server) previewFor(snapshot subscription.Snapshot) Preview {
 		UpdateIntervalSeconds: updateIntervalSeconds(snapshot.UpdateInterval),
 		CanConnect:            !snapshot.Subscription.Expired(now()),
 		OlcRTCAvailable:       olcrtcAvailable(snapshot.Config),
+		OlcRTCIncomplete:      olcRTCIncomplete(snapshot.Config),
+		AmneziaUnsupported:    amneziaRuntimeUnsupported(snapshot.Config),
 	}
 	if !snapshot.Subscription.Expire.IsZero() {
 		preview.ExpireUTC = snapshot.Subscription.Expire.UTC().Format(time.RFC3339)

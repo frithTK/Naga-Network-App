@@ -22,7 +22,6 @@ class NagaHomeView extends StatelessWidget {
     this.trafficModeError,
     this.controlPlaneReachable,
     this.nodes = const [],
-    this.networkClass = 'unknown',
   });
 
   final ConnectionStatus status;
@@ -44,7 +43,6 @@ class NagaHomeView extends StatelessWidget {
   final String? trafficModeError;
   final bool? controlPlaneReachable;
   final List<UnifiedNode> nodes;
-  final String networkClass;
 
   @override
   Widget build(BuildContext context) {
@@ -73,12 +71,17 @@ class NagaHomeView extends StatelessWidget {
               ? 'Подписка истекла'
               : 'Подключение недоступно'
         : switch (status) {
-            ConnectionStatus.connected => 'VPN подключён',
+            ConnectionStatus.connected => switch (runtime?.accessState) {
+              'unconfirmed' => 'Туннель поднят, доступ не подтверждён',
+              'checking' => 'Туннель поднят, доступ проверяется',
+              _ => 'VPN подключён',
+            },
             ConnectionStatus.connecting => 'Подключаемся…',
             ConnectionStatus.error => 'Не удалось подключиться',
             ConnectionStatus.disconnected => 'Готов к подключению',
           };
-    final statusColor = offline || restriction != null
+    final statusColor =
+        offline || restriction != null || runtime?.accessState == 'unconfirmed'
         ? _warning
         : connected
         ? _success
@@ -132,13 +135,14 @@ class NagaHomeView extends StatelessWidget {
         );
         final server = _ServerCard(
           selectedNode: serverTitle,
-          activeLatencyMs: nagaHomeLatencyMs(
-            runtimeLatencyMs: runtime?.activeLatencyMs,
-            selectedNode: selectedNode,
-            activeNode: runtime?.activeNode,
-            nodes: nodes,
-            networkClass: networkClass,
-          ),
+          activeLatencyMs: offline
+              ? null
+              : nagaHomeLatencyMs(
+                  runtimeLatencyMs: runtime?.activeLatencyMs,
+                  selectedNode: selectedNode,
+                  nodes: nodes,
+                  connected: connected,
+                ),
           connected: connected,
           compact: !wide,
           onChange: onOpenServerPicker,

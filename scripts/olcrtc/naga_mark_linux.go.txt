@@ -1,0 +1,50 @@
+// This file is copied into the pinned upstream olcRTC CLI for an isolated
+// Linux routing experiment. It is not included in the released Naga runtime.
+//go:build linux && !android
+
+package main
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"syscall"
+
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
+)
+
+const nagaMarkEnv = "NAGA_OLCRTC_SOCKET_MARK"
+const nagaRequireMarkEnv = "NAGA_OLCRTC_REQUIRE_MARK"
+
+func nagaInstallSocketMark(value string, required bool) error {
+	if value == "" {
+		if required {
+			return fmt.Errorf("olcRTC socket mark is required")
+		}
+		return nil
+	}
+	mark, err := strconv.ParseUint(value, 0, 32)
+	if err != nil || mark == 0 {
+		return fmt.Errorf("invalid olcRTC socket mark")
+	}
+	protect.SetProtector(func(fd int) bool {
+		if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_MARK, int(mark)); err != nil {
+			return false
+		}
+		got, err := syscall.GetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_MARK)
+		return err == nil && uint32(got) == uint32(mark)
+	})
+	return nil
+}
+
+func init() {
+	require := os.Getenv(nagaRequireMarkEnv)
+	if require != "" && require != "1" {
+		fmt.Fprintln(os.Stderr, "invalid olcRTC socket mark requirement")
+		os.Exit(2)
+	}
+	if err := nagaInstallSocketMark(os.Getenv(nagaMarkEnv), require == "1"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+}

@@ -2,6 +2,8 @@ package control
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
@@ -9,6 +11,21 @@ import (
 	"naga.network/core/profile"
 	"naga.network/core/storage"
 )
+
+func TestHTTPProbeRequires204(t *testing.T) {
+	for _, status := range []int{http.StatusNoContent, http.StatusOK, http.StatusFound, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+			_, err := measureHTTPLatency(context.Background(), server.Client(), server.URL)
+			if (err == nil) != (status == http.StatusNoContent) {
+				t.Fatalf("status %d: error = %v", status, err)
+			}
+		})
+	}
+}
 
 func TestProbeOlcRTCSkipsMissingBinary(t *testing.T) {
 	store, err := storage.New(t.TempDir())

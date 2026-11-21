@@ -1,0 +1,25 @@
+{
+  "v": 1,
+  "app": "naga-network",
+  "singbox": {
+    "outbounds": [
+      {"type": "selector", "tag": "Mode", "outbounds": ["direct"], "default": "direct"},
+      {"type": "direct", "tag": "direct"}
+    ],
+    "route": {"final": "Mode"}
+  },
+  "amnezia": {
+    "conf": "[Interface]\nPrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\nAddress = 10.8.0.2/32\nJc = 4\nJmin = 40\nJmax = 70\n[Peer]\nPublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\nEndpoint = 192.0.2.10:51820\nAllowedIPs = 0.0.0.0/0\n"
+  },
+  "olcrtc": {
+    "label": "Test olcRTC",
+    "profiles": [
+      {"name": "Telemost test", "provider": "telemost", "transport": "vp8channel", "room": "https://example.org/telemost", "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      {"name": "MTS test", "provider": "mtslink", "transport": "vp8channel", "room": "https://example.org/mts", "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+    ],
+    "uris": [
+      "olcrtc://telemost?vp8channel@https://example.org/telemost#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa$Telemost test",
+      "olcrtc://mtslink?vp8channel@https://example.org/mts#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa$MTS test"
+    ]
+  }
+}

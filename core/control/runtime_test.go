@@ -1568,6 +1568,73 @@ func TestRuntimeControllerUnifiedInjectsAmneziaWGWithoutSecondTUN(t *testing.T) 
 	}
 }
 
+func TestRuntimeControllerStartsSelectedEnvelopeAmneziaWG(t *testing.T) {
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]any{
+		"v": 1, "app": "naga-network",
+		"singbox": json.RawMessage(`{"route":{"final":"Mode"},"outbounds":[{"type":"selector","tag":"Mode","outbounds":["fast"],"default":"fast"},{"type":"vless","tag":"fast"}]}`),
+		"amnezia": map[string]any{"conf": string(awgRuntimeTestdata(t, "awg31.valid.conf"))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := profile.Profile{ID: "bundle", Engine: profile.EngineSingBox, Config: raw, SelectedMode: awgcfg.LeafTag}
+	if err := store.Save(value); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &selectableRuntime{}
+	controller := NewRuntimeController(&store, &recordingAdapter{runtime: runtime})
+	controller.AWGFactory = func() awgengine.Sidecar { return awgengine.NewLoopbackSidecar() }
+	started, err := controller.Start(value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Status != "connected" || started.ActiveNode != awgcfg.LeafTag {
+		t.Fatalf("unexpected runtime: %#v", started)
+	}
+	if _, err := controller.Stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeControllerStartsStandaloneAWGWithAnotherEnvelopeSelectedAWG(t *testing.T) {
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]any{
+		"v": 1, "app": "naga-network",
+		"singbox": json.RawMessage(`{"route":{"final":"Mode"},"outbounds":[{"type":"selector","tag":"Mode","outbounds":["fast"],"default":"fast"},{"type":"vless","tag":"fast"}]}`),
+		"amnezia": map[string]any{"conf": string(awgRuntimeTestdata(t, "awg31.valid.conf"))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []profile.Profile{
+		{ID: "bundle", Engine: profile.EngineSingBox, Config: raw, SelectedMode: awgcfg.LeafTag},
+		{ID: "standalone", Engine: profile.EngineAmneziaWG, Config: awgRuntimeTestdata(t, "awg31.valid.conf"), SelectedMode: awgcfg.LeafTag},
+	} {
+		if err := store.Save(value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	controller := NewRuntimeController(&store, &recordingAdapter{runtime: &selectableRuntime{}})
+	controller.AWGFactory = func() awgengine.Sidecar { return awgengine.NewLoopbackSidecar() }
+	started, err := controller.Start("standalone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Status != "connected" {
+		t.Fatalf("unexpected runtime: %#v", started)
+	}
+	if _, err := controller.Stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRuntimeControllerSkipsFailedAmneziaWGSidecar(t *testing.T) {
 	store, err := storage.New(t.TempDir())
 	if err != nil {

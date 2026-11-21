@@ -433,9 +433,8 @@ func runHostOlcTunnel(conn *os.File, req olcHostRequest) error {
 		return err
 	}
 	link.RoomIPs = parseRoomIPs(req.RoomIPs)
-	if err := BypassRoom(execer, link); err != nil {
-		_ = RestoreLink(execer, link)
-		return err
+	if err := BypassRoom(execer, &link); err != nil {
+		return errors.Join(err, RemoveRoomBypasses(execer, link))
 	}
 	command := exec.Command(req.HevPath, req.ConfigPath)
 	command.Dir = filepath.Dir(req.HevPath)
@@ -443,8 +442,7 @@ func runHostOlcTunnel(conn *os.File, req olcHostRequest) error {
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
 	if err := command.Start(); err != nil {
-		_ = RestoreLink(execer, link)
-		return err
+		return errors.Join(err, RemoveRoomBypasses(execer, link))
 	}
 	if job, err := attachKillOnCloseJob(command.Process.Pid); err == nil {
 		defer windows.CloseHandle(job)
@@ -455,8 +453,7 @@ func runHostOlcTunnel(conn *os.File, req olcHostRequest) error {
 	if err != nil {
 		_ = command.Process.Kill()
 		_, _ = command.Process.Wait()
-		_ = RestoreLink(execer, link)
-		return err
+		return errors.Join(err, RemoveRoomBypasses(execer, link))
 	}
 	if err := EngageDefault(execer, link); err != nil {
 		_ = RestoreLink(execer, link)

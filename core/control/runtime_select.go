@@ -9,6 +9,7 @@ import (
 
 	"naga.network/core/diagnostics"
 	"naga.network/core/engine"
+	awgengine "naga.network/core/engine/amneziawg"
 	"naga.network/core/policy"
 )
 
@@ -17,6 +18,8 @@ type groupProbeOutcome struct {
 	recorded []candidateProbeResult
 	selected *candidateProbeResult
 }
+
+const awgSelectionWindow = 350 * time.Millisecond
 
 // probeCandidateGroups keeps "connected" honest: the local process and Clash
 // API must be ready, and a leaf outbound must also complete an HTTP
@@ -28,13 +31,14 @@ func probeCandidateGroups(
 	candidates []policy.Candidate,
 	connectionPolicy policy.ConnectionPolicy,
 	timeout time.Duration,
+	awgProbers map[string]awgengine.HTTPSProber,
 ) (groupProbeOutcome, error) {
 	if timeout <= 0 {
 		timeout = outboundProbeTimeout
 	}
 	prober, canProbe := runtime.(engine.OutboundProber)
 	_, canSelect := runtime.(engine.SelectorSwitcher)
-	if !canProbe || !canSelect {
+	if !canSelect || (!canProbe && len(awgProbers) == 0) {
 		if journal != nil {
 			journal.Warn("runtime", "node_probe_unavailable", "Runtime не поддерживает проверку доступности VPN-узлов", nil)
 		}
@@ -57,12 +61,35 @@ func probeCandidateGroups(
 				"tuic":       candidateIsTUIC(group[0]),
 			})
 		}
+		groupContext, cancelGroup := context.WithCancel(parent)
 		results := make(chan candidateProbeResult, len(group))
+		earlySelection := false
+		awgSlots := make(chan struct{}, 4)
 		for _, candidate := range group {
 			candidate := candidate
+			if _, ok := awgProbers[candidate.RuntimeTag].(*deferredAWG); ok {
+				earlySelection = true
+			}
 			go func() {
 				startedAt := time.Now()
-				latency, err := prober.Probe(parent, candidate.RuntimeTag, probeTimeoutFor(candidate, timeout))
+				nodeTimeout := probeTimeoutFor(candidate, timeout)
+				result := candidateProbeResult{candidate: candidate}
+				if awg := awgProbers[candidate.RuntimeTag]; awg != nil {
+					select {
+					case awgSlots <- struct{}{}:
+						defer func() { <-awgSlots }()
+					case <-groupContext.Done():
+						return
+					}
+					result = probeAWGHTTPS(groupContext, candidate, awg, nodeTimeout, true)
+				} else if canProbe {
+					result.latency, result.err = prober.Probe(groupContext, candidate.RuntimeTag, nodeTimeout)
+				} else {
+					result.err = errors.New("runtime does not support probing this outbound")
+				}
+				if groupContext.Err() != nil {
+					return
+				}
 				if journal != nil {
 					fields := map[string]any{
 						"node":        candidate.SourceTag,
@@ -70,29 +97,56 @@ func probeCandidateGroups(
 						"protocol":    candidate.Protocol,
 						"duration_ms": time.Since(startedAt).Milliseconds(),
 					}
-					if err != nil {
-						fields["error"] = err
+					if result.source != "" {
+						fields["probe_source"] = result.source
+						fields["probe_target"] = result.target
+					}
+					if result.err != nil {
+						fields["error"] = result.err
 						journal.Warn("runtime", "node_probe_failed", "VPN-узел не прошёл проверку доступности", fields)
 					} else {
-						fields["latency_ms"] = latency
+						fields["latency_ms"] = result.latency
 						journal.Info("runtime", "node_probe_succeeded", "VPN-узел доступен", fields)
 					}
 				}
-				results <- candidateProbeResult{candidate: candidate, latency: latency, err: err}
+				results <- result
 			}()
 		}
 
 		var selected *candidateProbeResult
+		var selectionTimer *time.Timer
+		var selectionDeadline <-chan time.Time
+	collect:
 		for range group {
-			result := <-results
+			var result candidateProbeResult
+			select {
+			case result = <-results:
+			case <-selectionDeadline:
+				break collect
+			case <-groupContext.Done():
+				break collect
+			}
 			recorded = append(recorded, result)
 			if result.err != nil || result.latency <= 0 {
 				continue
 			}
-			if selected == nil || result.latency < selected.latency {
+			usingReserve := result.target == "cloudflare"
+			if selected == nil || (selected.target == "cloudflare" && !usingReserve) ||
+				((selected.target == "cloudflare") == usingReserve && result.latency < selected.latency) {
 				copy := result
 				selected = &copy
 			}
+			if earlySelection && selectionTimer == nil {
+				selectionTimer = time.NewTimer(awgSelectionWindow)
+				selectionDeadline = selectionTimer.C
+			}
+		}
+		if selectionTimer != nil {
+			selectionTimer.Stop()
+		}
+		cancelGroup()
+		if err := parent.Err(); err != nil {
+			return groupProbeOutcome{recorded: recorded}, err
 		}
 		if selected == nil {
 			continue
@@ -109,22 +163,11 @@ func (c *RuntimeController) applyProbeSelectionLocked(parent context.Context, ru
 	if outcome.selected == nil {
 		return errors.New("ни один VPN-узел не прошёл проверку доступности")
 	}
-	switcher, canSelect := runtime.(engine.SelectorSwitcher)
-	if !canSelect {
-		return nil
-	}
 	selected := outcome.selected
-	if selected.candidate.RuntimeTag != c.activeRuntimeTag {
-		selectContext, cancel := context.WithTimeout(parent, 5*time.Second)
-		err := switcher.Select(selectContext, selected.candidate.RuntimeTag)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("выбрать проверенный VPN-узел: %w", err)
-		}
-	}
 	previous := c.activeRuntimeTag
-	c.activeRuntimeTag = selected.candidate.RuntimeTag
-	c.healthFailCount = 0
+	if err := c.selectProbedCandidateLocked(parent, runtime, selected.candidate); err != nil {
+		return err
+	}
 	if previous != "" && previous != selected.candidate.RuntimeTag {
 		if entry, ok := c.probeCache[previous]; ok && entry.Status == ProbeFailed {
 			c.failoverMessage = fmt.Sprintf("Переключили на %s — предыдущий не ответил", selected.candidate.SourceTag)
@@ -143,6 +186,23 @@ func (c *RuntimeController) applyProbeSelectionLocked(parent context.Context, ru
 			"tuic":       candidateIsTUIC(selected.candidate),
 		})
 	}
+	return nil
+}
+
+func (c *RuntimeController) selectProbedCandidateLocked(parent context.Context, runtime engine.Runtime, candidate policy.Candidate) error {
+	switcher, canSelect := runtime.(engine.SelectorSwitcher)
+	if !canSelect {
+		return nil
+	}
+	if candidate.RuntimeTag != c.activeRuntimeTag {
+		ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+		defer cancel()
+		if err := switcher.Select(ctx, candidate.RuntimeTag); err != nil {
+			return fmt.Errorf("выбрать VPN-узел: %w", err)
+		}
+	}
+	c.activeRuntimeTag = candidate.RuntimeTag
+	c.healthFailCount = 0
 	return nil
 }
 

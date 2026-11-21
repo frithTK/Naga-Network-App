@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1047,6 +1048,124 @@ func TestOlcRTCNodesUseSubscriptionNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	if saved.SelectedMode != "🇨🇿 Czechia (CZ) Jitsi" {
+		t.Fatalf("selected mode = %q", saved.SelectedMode)
+	}
+}
+
+func TestMixedOlcSubscriptionKeepsSupportedNodeAndReportsIncomplete(t *testing.T) {
+	key := strings.Repeat("a", 64)
+	raw := `{"v":1,"app":"naga-network","singbox":{"outbounds":[{"type":"direct","tag":"direct"}]},"olcrtc":{"profiles":[{"name":"old","provider":"jitsi","transport":"datachannel","room":"https://example.org/room","key":"` + key + `"},{"name":"new","provider":"mtslink","transport":"vp8channel","room":"https://example.org/meeting","key":"` + key + `"}]}}`
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := Server{Storage: &store}
+	body, err := json.Marshal(map[string]string{"config": raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/profiles/import", bytes.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("import status = %d", response.Code)
+	}
+	var imported struct {
+		ProfileID string  `json:"profile_id"`
+		Preview   Preview `json:"preview"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &imported); err != nil {
+		t.Fatal(err)
+	}
+	if !imported.Preview.OlcRTCAvailable || !imported.Preview.OlcRTCIncomplete {
+		t.Fatal("mixed subscription did not report both availability and unsupported nodes")
+	}
+	nodes := httptest.NewRecorder()
+	api.ServeHTTP(nodes, httptest.NewRequest(http.MethodGet, "/v1/profiles/"+imported.ProfileID+"/nodes", nil))
+	if nodes.Code != http.StatusOK || !strings.Contains(nodes.Body.String(), `"tag":"old"`) || strings.Contains(nodes.Body.String(), `"tag":"new"`) || strings.Contains(nodes.Body.String(), key) {
+		t.Fatalf("node list status=%d body=%s", nodes.Code, nodes.Body.String())
+	}
+}
+
+func TestPreviewReportsUnsupportedAmneziaRuntimeParameters(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "profile", "amneziawg", "testdata", "awg31.j1.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview := (Server{}).previewFor(subscription.Snapshot{Config: raw})
+	if !preview.AmneziaUnsupported {
+		t.Fatal("preview must report unsupported AWG fields")
+	}
+	ordinary, err := os.ReadFile(filepath.Join("..", "profile", "amneziawg", "testdata", "awg31.valid.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (Server{}).previewFor(subscription.Snapshot{Config: ordinary}).AmneziaUnsupported {
+		t.Fatal("ordinary AWG configuration reported as unsupported")
+	}
+	unknown := bytes.Replace(ordinary, []byte("[Interface]"), []byte("[Interface]\nFutureOption = private-value"), 1)
+	if !(Server{}).previewFor(subscription.Snapshot{Config: unknown}).AmneziaUnsupported {
+		t.Fatal("unknown AWG option must be reported before connecting")
+	}
+}
+
+func TestRefreshKeepsOldProfileWhenSelectedOlcNodeDisappears(t *testing.T) {
+	key := strings.Repeat("a", 64)
+	old := `{"v":1,"app":"naga-network","singbox":{"outbounds":[{"type":"direct","tag":"direct"}]},"olcrtc":{"profiles":[{"name":"old","provider":"jitsi","transport":"datachannel","room":"https://example.org/room","key":"` + key + `"}]}}`
+	next := `{"v":1,"app":"naga-network","singbox":{"outbounds":[{"type":"direct","tag":"direct"}]},"olcrtc":{"profiles":[{"name":"other","provider":"jitsi","transport":"datachannel","room":"https://example.org/other","key":"` + key + `"}]}}`
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := profile.Profile{ID: "selected-room", Name: "Naga", Config: []byte(old), SourceURL: "https://example.org/sub", SelectedMode: "old", ImportedAt: time.Now().UTC()}
+	if err := store.Save(value); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]string{"config": next})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := Server{Storage: &store}
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/profiles/selected-room/refresh", bytes.NewReader(body)))
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("refresh status = %d", response.Code)
+	}
+	saved, err := store.Load(value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(saved.Config) != old || saved.SelectedMode != "old" {
+		t.Fatal("refresh replaced the previously selected room")
+	}
+}
+
+func TestRefreshRemapsSelectedDuplicateOlcRoomAfterReordering(t *testing.T) {
+	key := strings.Repeat("a", 64)
+	first := "olcrtc://jitsi?datachannel@https://example.org/first#" + key + "$Same"
+	second := "olcrtc://jitsi?datachannel@https://example.org/second#" + key + "$Same"
+	store, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := profile.Profile{ID: "reordered-rooms", Name: "Naga", Config: []byte(first + "\n" + second), SourceURL: "https://example.org/sub", Engine: profile.EngineOlcRTC, SelectedMode: "Same 2", ImportedAt: time.Now().UTC()}
+	if err := store.Save(value); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]string{"config": second + "\n" + first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := Server{Storage: &store}
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/profiles/reordered-rooms/refresh", bytes.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("refresh status = %d body=%s", response.Code, response.Body.String())
+	}
+	saved, err := store.Load(value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.SelectedMode != "Same" {
 		t.Fatalf("selected mode = %q", saved.SelectedMode)
 	}
 }

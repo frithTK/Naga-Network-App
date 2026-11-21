@@ -13,8 +13,10 @@ import (
 var (
 	ErrNotReady          = errors.New("amneziawg sidecar is not ready")
 	ErrStopped           = errors.New("amneziawg sidecar is stopped")
-	ErrHandshakeTimeout  = errors.New("amneziawg tunnel handshake timed out")
+	ErrHandshakeTimeout  = errors.New("AmneziaWG: сервер не ответил на рукопожатие")
 	ErrTunnelUnavailable = errors.New("AmneziaWG не установил туннель")
+	ErrUplinkUnavailable = errors.New("AmneziaWG: не удалось закрепить внешний маршрут VPN-сервера")
+	ErrBindingInUse      = errors.New("AmneziaWG: порт или ключ узла уже используется другим туннелем Naga")
 )
 
 // Sidecar terminates AmneziaWG in userspace and exposes SOCKS5 on loopback.
@@ -23,6 +25,15 @@ type Sidecar interface {
 	ListenAddr() string
 	Ready(ctx context.Context) error
 	Stop() error
+}
+
+// PreparedSidecar can reserve a stable SOCKS address before it opens any
+// AWG sockets. The address stays registered when an activation fails.
+type PreparedSidecar interface {
+	Sidecar
+	HTTPSProber
+	Prepare(ctx context.Context) error
+	Deactivate()
 }
 
 type Factory func() Sidecar

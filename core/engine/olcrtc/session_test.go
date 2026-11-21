@@ -3,6 +3,7 @@
 package olcrtc
 
 import (
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -11,11 +12,47 @@ import (
 type fakeExec struct {
 	calls []string
 	out   map[string]string
+	fail  string
 }
 
 func (f *fakeExec) Run(name string, args ...string) error {
 	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
+	if f.fail != "" && strings.Contains(name+" "+strings.Join(args, " "), f.fail) {
+		return errors.New("test route conflict")
+	}
 	return nil
+}
+
+func TestBypassCleanupPreservesRoutesNotCreatedBySession(t *testing.T) {
+	exec := &fakeExec{fail: "ip route add 203.0.113.11/32"}
+	state := LinkState{
+		Route:   DefaultRoute{Gateway: "192.0.2.1", Device: "wlan0"},
+		RoomIPs: []net.IP{net.ParseIP("203.0.113.10"), net.ParseIP("203.0.113.11"), net.ParseIP("2001:db8::1")},
+	}
+	if err := BypassRoom(exec, &state); err == nil {
+		t.Fatal("expected conflict")
+	}
+	if err := RemoveRoomBypasses(exec, state); err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Join(exec.calls, "\n")
+	if !strings.Contains(calls, "ip route del 203.0.113.10/32 via 192.0.2.1 dev wlan0 proto 186") {
+		t.Fatalf("created route was not removed: %s", calls)
+	}
+	if strings.Contains(calls, "ip route del 203.0.113.11/32") || strings.Contains(calls, "2001:db8") || strings.Contains(calls, "default") {
+		t.Fatalf("unowned route or default route was changed: %s", calls)
+	}
+}
+
+func TestBypassRejectsIPv6OnlyRooms(t *testing.T) {
+	exec := &fakeExec{}
+	state := LinkState{RoomIPs: []net.IP{net.ParseIP("2001:db8::1")}}
+	if err := BypassRoom(exec, &state); err == nil {
+		t.Fatal("IPv6-only rooms cannot use this IPv4 tunnel")
+	}
+	if len(exec.calls) != 0 {
+		t.Fatal("IPv6 address was passed to the IPv4 route command")
+	}
 }
 
 func (f *fakeExec) Output(name string, args ...string) ([]byte, error) {
@@ -35,14 +72,14 @@ func TestBypassPinsRoomViaCurrentGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	state.RoomIPs = []net.IP{net.ParseIP("203.0.113.10")}
-	if err := BypassRoom(exec, state); err != nil {
+	if err := BypassRoom(exec, &state); err != nil {
 		t.Fatal(err)
 	}
 	if err := EngageDefault(exec, state); err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(exec.calls, "\n")
-	if !strings.Contains(joined, "ip route replace 203.0.113.10/32 via 192.168.1.1 dev wlan0") {
+	if !strings.Contains(joined, "ip route add 203.0.113.10/32 via 192.168.1.1 dev wlan0") {
 		t.Fatalf("bypass missing:\n%s", joined)
 	}
 	if strings.Contains(joined, "127.0.0.1") {

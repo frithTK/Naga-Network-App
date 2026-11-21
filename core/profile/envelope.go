@@ -20,11 +20,12 @@ const (
 // the original bytes; sing-box JSON and optional AmneziaWG conf are extracted
 // only for validation and runtime.
 type Envelope struct {
-	Version     int
-	App         string
-	SingBox     []byte
-	AmneziaConf []byte
-	OlcRTC      *olcrtc.Config
+	Version      int
+	App          string
+	SingBox      []byte
+	AmneziaConf  []byte
+	AmneziaConfs []AmneziaEntry
+	OlcRTC       *olcrtc.Config
 }
 
 type envelopeFile struct {
@@ -36,7 +37,17 @@ type envelopeFile struct {
 }
 
 type amneziaEnvelope struct {
-	Conf string `json:"conf"`
+	Conf  string `json:"conf"`
+	Confs []struct {
+		Country string `json:"country"`
+		Conf    string `json:"conf"`
+	} `json:"confs"`
+}
+
+// AmneziaEntry identifies a country-specific configuration in a subscription.
+type AmneziaEntry struct {
+	Country string
+	Conf    []byte
 }
 
 // ParseEnvelope reports whether raw is a Naga Network envelope. recognized is
@@ -77,10 +88,30 @@ func ParseEnvelope(raw []byte) (Envelope, bool, error) {
 		return Envelope{}, true, errors.New("naga-network amnezia field is invalid")
 	}
 	conf := strings.TrimSpace(wrapper.Conf)
-	if conf == "" {
-		return env, true, nil
+	if conf != "" {
+		env.AmneziaConf = []byte(conf)
 	}
-	env.AmneziaConf = []byte(conf)
+	if len(wrapper.Confs) > 64 {
+		return Envelope{}, true, errors.New("naga-network amnezia has too many configurations")
+	}
+	seen := make(map[string]bool)
+	legacyFound := false
+	for _, entry := range wrapper.Confs {
+		country := strings.ToUpper(strings.TrimSpace(entry.Country))
+		value := strings.TrimSpace(entry.Conf)
+		if len(country) != 2 || country[0] < 'A' || country[0] > 'Z' || country[1] < 'A' || country[1] > 'Z' || value == "" || seen[country] {
+			return Envelope{}, true, errors.New("naga-network amnezia configurations have invalid or duplicate countries")
+		}
+		seen[country] = true
+		env.AmneziaConfs = append(env.AmneziaConfs, AmneziaEntry{Country: country, Conf: []byte(value)})
+		legacyFound = legacyFound || value == conf
+	}
+	if conf != "" && !legacyFound {
+		env.AmneziaConfs = append(env.AmneziaConfs, AmneziaEntry{Conf: []byte(conf)})
+	}
+	if len(env.AmneziaConf) == 0 && len(env.AmneziaConfs) > 0 {
+		env.AmneziaConf = append([]byte(nil), env.AmneziaConfs[0].Conf...)
+	}
 	return env, true, nil
 }
 
@@ -95,14 +126,17 @@ func OlcRTCError(raw []byte) error {
 	if json.Unmarshal(ParsingBytes(raw), &document) != nil {
 		return nil
 	}
-	_, fieldErr := olcrtc.ParseField(document.OlcRTC)
+	cfg, fieldErr := olcrtc.ParseField(document.OlcRTC)
+	if fieldErr == nil && cfg != nil && cfg.Ignored > 0 {
+		return fmt.Errorf("olcrtc: %d unsupported or invalid nodes", cfg.Ignored)
+	}
 	return fieldErr
 }
 
 // RuntimeOlcRTC returns a copy of the parsed olcrtc field. Stored bytes stay unchanged.
 func RuntimeOlcRTC(raw []byte) *olcrtc.Config {
 	env, ok, err := ParseEnvelope(raw)
-	if !ok || err != nil || env.OlcRTC == nil {
+	if !ok || err != nil || env.OlcRTC == nil || len(env.OlcRTC.Profiles) == 0 {
 		return nil
 	}
 	copy := *env.OlcRTC

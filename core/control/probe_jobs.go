@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	awgengine "naga.network/core/engine/amneziawg"
 	"naga.network/core/policy"
 	"naga.network/core/profile"
 )
@@ -130,7 +131,7 @@ func (c *RuntimeController) startProbeJobWithConcurrency(concurrency int) (*node
 	ctx, cancel := context.WithDeadline(context.Background(), now.Add(budget))
 	job := &nodeProbeJob{cancel: cancel, done: make(chan struct{}), generation: c.probeGeneration, startedAt: now,
 		nodes: make(map[string]ProbeNodeProgress), snapshot: ProbeJobSnapshot{
-			Concurrency: ProbeConcurrency{SingBox: concurrency, AWG: 1, OlcRTC: 1},
+			Concurrency: ProbeConcurrency{SingBox: concurrency, AWG: idleAWGConcurrency(), OlcRTC: 1},
 			JobID:       hex.EncodeToString(random[:]), State: "preparing", Revision: 1,
 			StartedAt: now.UTC(), Deadline: now.Add(budget).UTC(),
 		}}
@@ -392,16 +393,23 @@ func (c *RuntimeController) publishProbeResult(ctx context.Context, result candi
 	if !ok {
 		return
 	}
-	entry := ProbeCacheEntry{Status: ProbeFailed, CheckedAt: time.Now().UTC(), ConfigHash: job.profileHashes[result.candidate.ProfileID]}
-	node.Phase, node.Reason = "failed", "probe_failed"
+	if errors.Is(result.err, awgengine.ErrBindingInUse) {
+		job.snapshot.Revision++
+		node.Phase, node.Reason, node.Revision = "skipped", "awg_in_use", job.snapshot.Revision
+		setProbeNodeLocked(job, node)
+		return
+	}
+	entry := ProbeCacheEntry{Status: ProbeFailed, CheckedAt: time.Now().UTC(), ConfigHash: job.profileHashes[result.candidate.ProfileID],
+		Source: result.source, Target: result.target}
+	node.Phase, node.Reason = "failed", probeFailureReason(result)
 	if result.err == nil && result.latency > 0 {
 		entry.Status, entry.LatencyMS = ProbeHealthy, result.latency
 		node.Phase, node.Reason = "healthy", ""
-	} else if errors.Is(result.err, context.DeadlineExceeded) {
-		node.Reason = "timeout"
 	}
+	entry.Reason = node.Reason
 	job.snapshot.Revision++
 	node.LatencyMS, node.ProbeStatus, node.CheckedAt = entry.LatencyMS, string(entry.Status), entry.CheckedAt
+	node.ProbeSource, node.ProbeTarget = entry.Source, entry.Target
 	node.Revision = job.snapshot.Revision
 	setProbeNodeLocked(job, node)
 	if c.manualProbeCache == nil {

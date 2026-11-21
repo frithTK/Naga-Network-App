@@ -12,6 +12,10 @@ const (
 	LeafTag     = "AmneziaWG"
 	DirectTag   = "direct"
 	dnsTag      = "dns-bootstrap"
+	// DNS relay requests are routed by the active AWG SOCKS leaf.
+	DNSRelayHost = "192.0.2.53"
+	DNSRelayPort = 53535
+	DNSRelayAddr = "192.0.2.53:53535"
 )
 
 // IsLeafTag reports whether tag is the AmneziaWG leaf or a namespaced
@@ -22,9 +26,9 @@ func IsLeafTag(tag string) bool {
 		return true
 	}
 	if separator := strings.LastIndex(tag, "::"); separator >= 0 {
-		return strings.EqualFold(tag[separator+2:], LeafTag)
+		tag = tag[separator+2:]
 	}
-	return false
+	return strings.EqualFold(tag, LeafTag) || strings.HasSuffix(tag, " "+LeafTag)
 }
 
 // SocksOutbound is the runtime-only SOCKS5 leaf that fronts the userspace
@@ -49,6 +53,14 @@ func SocksOutbound(host string, port int, tag string) map[string]any {
 // BuildRuntimeJSON returns a temporary sing-box config that sends TUN traffic
 // to a loopback SOCKS5 sidecar. The source AmneziaWG conf is never modified.
 func BuildRuntimeJSON(socksHost string, socksPort int, dnsServers []string) ([]byte, error) {
+	return buildRuntimeJSON(socksHost, socksPort, dnsSection(dnsServers, LeafTag, 0))
+}
+
+func BuildRuntimeJSONWithSelectedDNS(socksHost string, socksPort int) ([]byte, error) {
+	return buildRuntimeJSON(socksHost, socksPort, dnsSection([]string{DNSRelayHost}, SelectorTag, DNSRelayPort))
+}
+
+func buildRuntimeJSON(socksHost string, socksPort int, dns map[string]any) ([]byte, error) {
 	host := strings.TrimSpace(socksHost)
 	if host == "" {
 		host = "127.0.0.1"
@@ -57,7 +69,7 @@ func BuildRuntimeJSON(socksHost string, socksPort int, dnsServers []string) ([]b
 		return nil, fmt.Errorf("amneziawg socks port is invalid")
 	}
 	document := map[string]any{
-		"dns": dnsSection(dnsServers, LeafTag),
+		"dns": dns,
 		"inbounds": []any{
 			map[string]any{
 				"type":           "tun",
@@ -90,17 +102,19 @@ func BuildRuntimeJSON(socksHost string, socksPort int, dnsServers []string) ([]b
 	return json.MarshalIndent(document, "", "  ")
 }
 
-func dnsSection(servers []string, detour string) map[string]any {
+func dnsSection(servers []string, detour string, port int) map[string]any {
+	server := map[string]any{
+		"type":   "udp",
+		"tag":    dnsTag,
+		"server": firstDNSServer(servers),
+		"detour": detour,
+	}
+	if port != 0 {
+		server["server_port"] = port
+	}
 	return map[string]any{
-		"servers": []any{
-			map[string]any{
-				"type":   "udp",
-				"tag":    dnsTag,
-				"server": firstDNSServer(servers),
-				"detour": detour,
-			},
-		},
-		"final": dnsTag,
+		"servers": []any{server},
+		"final":   dnsTag,
 	}
 }
 

@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os/exec"
@@ -56,27 +57,45 @@ func (m *ResolvedDNSManager) Configure() (func() error, error) {
 			return nil, fmt.Errorf("set system DNS server: %w", err)
 		}
 	}
-
-	if err := runWithInterfaceRetry(run, "dns", m.Interface, m.Server); err != nil {
-		return nil, fmt.Errorf("set system DNS server: %w", err)
+	linkIndex := 0
+	if m.run == nil {
+		if link, err := net.InterfaceByName(m.Interface); err == nil {
+			linkIndex = link.Index
+		}
 	}
-	if err := run("domain", m.Interface, "~."); err != nil {
-		_ = run("revert", m.Interface)
-		return nil, fmt.Errorf("set system DNS route: %w", err)
-	}
-	if err := run("default-route", m.Interface, "yes"); err != nil {
-		_ = run("revert", m.Interface)
-		return nil, fmt.Errorf("set system DNS default route: %w", err)
-	}
-	_ = run("flush-caches")
-
-	return func() error {
+	restore := func() error {
+		if linkIndex != 0 {
+			link, err := net.InterfaceByName(m.Interface)
+			if err != nil || link.Index != linkIndex {
+				// systemd-resolved discards state when the old link disappears.
+				return nil
+			}
+		}
 		err := run("revert", m.Interface)
 		if err != nil && strings.Contains(strings.ToLower(err.Error()), "not found") {
 			return nil
 		}
 		return err
-	}, nil
+	}
+	rollback := func(err error) (func() error, error) {
+		if revertErr := restore(); revertErr != nil {
+			return restore, errors.Join(err, revertErr)
+		}
+		return nil, err
+	}
+
+	if err := runWithInterfaceRetry(run, "dns", m.Interface, m.Server); err != nil {
+		return nil, fmt.Errorf("set system DNS server: %w", err)
+	}
+	if err := run("domain", m.Interface, "~."); err != nil {
+		return rollback(fmt.Errorf("set system DNS route: %w", err))
+	}
+	if err := run("default-route", m.Interface, "yes"); err != nil {
+		return rollback(fmt.Errorf("set system DNS default route: %w", err))
+	}
+	_ = run("flush-caches")
+
+	return restore, nil
 }
 
 func runWithInterfaceRetry(run func(args ...string) error, args ...string) error {

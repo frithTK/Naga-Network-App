@@ -1,10 +1,13 @@
 package olcrtc
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 // ConfigDir is the private directory for one profile's client.yaml.
@@ -44,8 +47,16 @@ func BuildAtPort(cfg *Config, port int) (Document, error) {
 	}
 	profiles := make([]Profile, len(cfg.Profiles))
 	for i, profile := range cfg.Profiles {
+		if i > 0 && profile.Key != cfg.Profiles[0].Key {
+			return Document{}, errors.New("узлы olcRTC используют разные ключи: выберите один узел")
+		}
 		if !profile.RuntimeAllowed {
 			return Document{}, ErrTransportOff
+		}
+		for key := range profile.Params {
+			if _, ok := allowedParams[key]; !ok {
+				return Document{}, ErrTransportOff
+			}
 		}
 		transport, err := runtimeTransport(profile)
 		if err != nil {
@@ -120,14 +131,17 @@ func writeParams(b *strings.Builder, indent string, params map[string]string) {
 }
 
 func yamlScalar(value string) string {
-	if value == "" || strings.ContainsAny(value, ":#{}[]&*!|>%@`\"', \n") {
+	if value == "" || strings.ContainsAny(value, ":#{}[]&*!|>%@`\"', \\") || strings.IndexFunc(value, unicode.IsControl) >= 0 {
 		return yamlQuote(value)
 	}
 	return value
 }
 
 func yamlQuote(value string) string {
-	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+	// JSON string escaping is valid YAML double-quoted scalar escaping and also
+	// protects backslashes, newlines and control characters in room names.
+	quoted, _ := json.Marshal(value)
+	return string(quoted)
 }
 
 // WriteFile stores the YAML for the profile directory. The file mode is 0600

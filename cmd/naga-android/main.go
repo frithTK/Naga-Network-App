@@ -4,6 +4,7 @@ package main
 
 /*
 #include <stdlib.h>
+extern int naga_protect_awg_socket(int);
 */
 import "C"
 
@@ -22,6 +23,10 @@ var (
 )
 
 func main() {}
+
+func init() {
+	androidvpn.ProtectSocket = func(fd int) bool { return C.naga_protect_awg_socket(C.int(fd)) != 0 }
+}
 
 func existing(path string) string {
 	if _, err := os.Stat(path); err == nil {

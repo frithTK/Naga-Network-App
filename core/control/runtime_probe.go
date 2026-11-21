@@ -3,12 +3,14 @@ package control
 import (
 	"context"
 	"errors"
+	"maps"
 	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"naga.network/core/engine"
+	awgengine "naga.network/core/engine/amneziawg"
 	"naga.network/core/policy"
 	"naga.network/core/profile"
 	awgcfg "naga.network/core/profile/amneziawg"
@@ -27,6 +29,9 @@ type ProbeCacheEntry struct {
 	Status     ProbeStatus `json:"status"`
 	CheckedAt  time.Time   `json:"checked_at"`
 	ConfigHash string      `json:"-"`
+	Reason     string      `json:"reason,omitempty"`
+	Source     string      `json:"probe_source,omitempty"`
+	Target     string      `json:"probe_target,omitempty"`
 }
 
 var (
@@ -65,10 +70,13 @@ func (c *RuntimeController) recordProbeLocked(result candidateProbeResult) {
 	if c.probeCache == nil {
 		c.probeCache = make(map[string]ProbeCacheEntry)
 	}
-	entry := ProbeCacheEntry{CheckedAt: time.Now().UTC(), Status: ProbeFailed, ConfigHash: c.runtimeConfigHashes[result.candidate.ProfileID]}
+	entry := ProbeCacheEntry{CheckedAt: time.Now().UTC(), Status: ProbeFailed, ConfigHash: c.runtimeConfigHashes[result.candidate.ProfileID],
+		Source: result.source, Target: result.target}
 	if result.err == nil && result.latency > 0 {
 		entry.Status = ProbeHealthy
 		entry.LatencyMS = result.latency
+	} else {
+		entry.Reason = probeFailureReason(result)
 	}
 	c.probeCache[key] = entry
 	if result.candidate.ProfileID != "" && result.candidate.SourceTag != "" {
@@ -310,6 +318,7 @@ func (c *RuntimeController) runSingBoxProbeNodes(parent context.Context) error {
 	c.mu.Lock()
 	if runtime, candidates, aliases, ok := c.connectedProbeContextLocked(); ok {
 		hashes := cloneStringMap(c.runtimeConfigHashes)
+		awgProbers := maps.Clone(c.awgProbers)
 		c.mu.Unlock()
 		currentHashes := map[string]string{}
 		if values, err := c.Store.List(); err == nil {
@@ -332,7 +341,7 @@ func (c *RuntimeController) runSingBoxProbeNodes(parent context.Context) error {
 		if len(candidates) == 0 {
 			return nil
 		}
-		return c.probeWithRuntime(parent, runtime, candidates, aliases)
+		return c.probeWithRuntime(parent, runtime, candidates, aliases, awgProbers)
 	}
 	c.mu.Unlock()
 	if !idleSingBoxProbeSupported() {
@@ -428,14 +437,20 @@ func (c *RuntimeController) probeOwnedRuntime(ctx context.Context, config []byte
 		return err
 	}
 	defer func() { resultErr = errors.Join(resultErr, c.stopOwnedProbeResource(ctx, runtime.Stop)) }()
-	return c.probeWithRuntime(ctx, runtime, candidates, aliases)
+	return c.probeWithRuntime(ctx, runtime, candidates, aliases, nil)
+}
+
+func idleAWGConcurrency() int {
+	if goruntime.GOOS == "linux" {
+		return 2
+	}
+	return 1
 }
 
 func (c *RuntimeController) probeIdleAWG(ctx context.Context, values []profile.Profile, namespaced bool) error {
 	jobs := make(chan profile.Profile)
 	var wg sync.WaitGroup
-	// Keep native sidecar/process concurrency conservative until stand measurements.
-	for i := 0; i < 1 && i < len(values); i++ {
+	for i := 0; i < idleAWGConcurrency() && i < len(values); i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -474,6 +489,11 @@ func (c *RuntimeController) probeOneIdleAWG(ctx context.Context, value profile.P
 		return
 	}
 	defer c.stopOwnedProbeResource(ctx, sidecar.Stop)
+	if prober, ok := sidecar.(awgengine.HTTPSProber); ok {
+		c.publishProbePhase(ctx, candidate, "checking", "")
+		c.publishProbeResult(ctx, probeAWGHTTPS(ctx, candidate, prober, awgFirstProbeTimeout, false))
+		return
+	}
 	host, port, err := parseLoopbackAddr(sidecar.ListenAddr())
 	var config []byte
 	if err == nil {
@@ -493,7 +513,7 @@ func (c *RuntimeController) probeOneIdleAWG(ctx context.Context, value profile.P
 	}
 }
 
-func (c *RuntimeController) probeWithRuntime(parent context.Context, runtime engine.Runtime, candidates []policy.Candidate, aliases map[string]string) error {
+func (c *RuntimeController) probeWithRuntime(parent context.Context, runtime engine.Runtime, candidates []policy.Candidate, aliases map[string]string, awgProbers map[string]awgengine.HTTPSProber) error {
 	if _, ok := runtime.(engine.OutboundProber); !ok {
 		return nil
 	}
@@ -528,6 +548,10 @@ func (c *RuntimeController) probeWithRuntime(parent context.Context, runtime eng
 				c.publishProbePhase(ctx, candidate, "checking", "")
 				timeout := probeTimeoutFor(candidate, nodeListProbeTimeout)
 				tag := clashProbeTag(candidate, aliases)
+				if prober := awgProbers[tag]; prober != nil {
+					results <- probeAWGHTTPS(ctx, candidate, prober, timeout, false)
+					continue
+				}
 				probeCtx, probeCancel := context.WithTimeout(ctx, timeout)
 				latency, err := probeOutboundOnce(runtime, probeCtx, tag, timeout)
 				probeCancel()
@@ -735,13 +759,14 @@ func (c *RuntimeController) reselectByPolicy(parent context.Context) (RuntimeSna
 		}
 	}
 	runtime := c.runtime
+	awgProbers := maps.Clone(c.awgProbers)
 	c.mu.Unlock()
 
 	if len(ranked) == 0 {
 		return c.Status(), nil
 	}
 
-	outcome, probeErr := probeCandidateGroups(parent, c.Journal, runtime, ranked, connectionPolicy, outboundProbeTimeout)
+	outcome, probeErr := probeCandidateGroups(parent, c.Journal, runtime, ranked, connectionPolicy, outboundProbeTimeout, awgProbers)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -848,21 +873,31 @@ func (c *RuntimeController) probeActiveLeaf(parent context.Context) {
 	runtime := c.runtime
 	tag := c.activeRuntimeTag
 	candidate, _ := c.candidateByRuntimeTagLocked(tag)
+	awgProber := c.awgProbers[tag]
 	c.mu.Unlock()
 
 	prober, ok := runtime.(engine.OutboundProber)
 	if !ok {
 		return
 	}
-	latency, err := prober.Probe(parent, tag, outboundProbeTimeout)
+	result := candidateProbeResult{candidate: candidate}
+	if awgProber != nil {
+		result = probeAWGHTTPS(parent, candidate, awgProber, awgFirstProbeTimeout, true)
+	} else {
+		result.latency, result.err = prober.Probe(parent, tag, outboundProbeTimeout)
+	}
 
 	c.mu.Lock()
 	if c.runtime != runtime || c.activeRuntimeTag != tag {
 		c.mu.Unlock()
 		return
 	}
-	c.recordProbeLocked(candidateProbeResult{candidate: candidate, latency: latency, err: err})
-	if err == nil && latency > 0 {
+	if parent.Err() != nil {
+		c.mu.Unlock()
+		return
+	}
+	c.recordProbeLocked(result)
+	if result.err == nil && result.latency > 0 {
 		c.healthFailCount = 0
 		c.mu.Unlock()
 		return

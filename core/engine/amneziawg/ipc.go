@@ -68,6 +68,17 @@ func ipcRequest(cfg awgcfg.Config) (string, error) {
 	if value, ok := boolUAPI(cfg.DisableCookies); ok {
 		fmt.Fprintf(&b, "disable_cookies=%s\n", value)
 	}
+	for _, field := range []struct{ key, value string }{
+		{"rekey_after_time", cfg.RekeyAfterTime},
+		{"rekey_timeout", cfg.RekeyTimeout},
+		{"reject_after_time", cfg.RejectAfterTime},
+		{"keepalive_timeout", cfg.KeepaliveTimeout},
+		{"max_handshake_attempts", cfg.MaxHandshakeAttempts},
+	} {
+		if field.value != "" {
+			fmt.Fprintf(&b, "%s=%s\n", field.key, field.value)
+		}
+	}
 	for _, peer := range cfg.Peers {
 		publicKey, err := keyToHex(peer.PublicKey)
 		if err != nil {
@@ -91,7 +102,9 @@ func ipcRequest(cfg awgcfg.Config) (string, error) {
 		for _, ip := range allowed {
 			fmt.Fprintf(&b, "allowed_ip=%s\n", ip)
 		}
-		if peer.PersistentKeepalive > 0 {
+		if peer.PersistentKeepaliveRange != "" {
+			fmt.Fprintf(&b, "persistent_keepalive_interval=%s\n", peer.PersistentKeepaliveRange)
+		} else if peer.PersistentKeepalive > 0 {
 			fmt.Fprintf(&b, "persistent_keepalive_interval=%d\n", peer.PersistentKeepalive)
 		}
 	}

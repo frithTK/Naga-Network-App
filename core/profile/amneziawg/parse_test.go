@@ -67,6 +67,59 @@ func TestParseValidConfig(t *testing.T) {
 	}
 }
 
+func TestUnsupportedFieldsRemainImportableButCannotStart(t *testing.T) {
+	base := string(testdata(t, "awg31.valid.conf"))
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{"unknown interface field", strings.Replace(base, "[Interface]", "[Interface]\nFutureOption = private-value", 1)},
+		{"unknown peer field", strings.Replace(base, "[Peer]", "[Peer]\nFutureOption = private-value", 1)},
+		{"unknown section", base + "\n[FutureSection]\nOption = private-value\n"},
+		{"duplicate field", strings.Replace(base, "[Interface]", "[Interface]\nJc = 42", 1)},
+		{"conflicting aliases", strings.Replace(base, "[Interface]", "[Interface]\nJunkPacketCount = 42", 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Parse([]byte(tc.raw))
+			if err != nil {
+				t.Fatalf("import should succeed: %v", err)
+			}
+			err = ValidateRuntime(cfg)
+			if err == nil || strings.Contains(err.Error(), "private-value") {
+				t.Fatalf("expected safe runtime refusal, got %v", err)
+			}
+		})
+	}
+}
+
+func TestEquivalentAmneziaAliasesRemainSupported(t *testing.T) {
+	raw := strings.Replace(string(testdata(t, "awg31.valid.conf")), "[Interface]", "[Interface]\nJunkPacketCount = 04", 1)
+	cfg, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRuntime(cfg); err != nil {
+		t.Fatalf("equivalent aliases were rejected: %v", err)
+	}
+}
+
+func TestInvalidRuntimeTogglesAreNotSilentlyIgnored(t *testing.T) {
+	base := string(testdata(t, "awg31.valid.conf"))
+	for _, name := range []string{"RandomTrailers", "DisableCookies"} {
+		t.Run(name, func(t *testing.T) {
+			raw := strings.Replace(base, "[Interface]", "[Interface]\n"+name+" = private-value", 1)
+			cfg, err := Parse([]byte(raw))
+			if err != nil {
+				t.Fatalf("import should succeed: %v", err)
+			}
+			err = ValidateRuntime(cfg)
+			if err == nil || !strings.Contains(err.Error(), name) || strings.Contains(err.Error(), "private-value") {
+				t.Fatalf("expected safe toggle error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestParseIncomplete(t *testing.T) {
 	_, err := Parse(testdata(t, "awg31.incomplete.conf"))
 	if err != ErrPrivateKeyMissing {

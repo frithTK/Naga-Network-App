@@ -38,7 +38,7 @@ func TestWindowsBypassPinsRoomViaCurrentGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	state.RoomIPs = []net.IP{net.ParseIP("203.0.113.10")}
-	if err := BypassRoom(exec, state); err != nil {
+	if err := BypassRoom(exec, &state); err != nil {
 		t.Fatal(err)
 	}
 	if err := EngageDefault(exec, state); err != nil {
@@ -75,12 +75,12 @@ func TestWindowsRestoreAfterBypassFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	state.RoomIPs = []net.IP{net.ParseIP("203.0.113.10")}
-	if err := BypassRoom(exec, state); err == nil {
+	if err := BypassRoom(exec, &state); err == nil {
 		t.Fatal("expected bypass failure")
 	}
 	_ = RestoreLink(exec, state)
 	joined := strings.Join(exec.calls, "\n")
-	if !strings.Contains(joined, "route delete 203.0.113.10 mask 255.255.255.255") {
-		t.Fatalf("failed bypass was not undone:\n%s", joined)
+	if strings.Contains(joined, "route delete 203.0.113.10 mask 255.255.255.255") {
+		t.Fatalf("route that was not created should not be deleted:\n%s", joined)
 	}
 }

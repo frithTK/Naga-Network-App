@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,7 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
+	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 	"golang.org/x/net/proxy"
+	wgnetstack "golang.zx2c4.com/wireguard/tun/netstack"
 
 	awgcfg "naga.network/core/profile/amneziawg"
 )
@@ -117,6 +121,63 @@ func TestIpcRequestIncludesS3AndHeaderProtection(t *testing.T) {
 	}
 }
 
+func TestAWGTimingRangesReachDeviceUAPI(t *testing.T) {
+	raw, err := os.ReadFile(profileTestdataPath(t, "awg31.valid.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := strings.Replace(string(raw), "[Interface]", "[Interface]\nRekeyAfterTime = 20-30\nRekeyTimeout = 3\nRejectAfterTime = 90-120\nKeepaliveTimeout = 8-10\nMaxHandshakeAttempts = 5-9", 1)
+	input = strings.Replace(input, "PersistentKeepalive = 25", "PersistentKeepalive = 22-30", 1)
+	cfg, err := awgcfg.Parse([]byte(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := ipcRequest(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tun, _, err := wgnetstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.8.0.2")}, nil, 1280)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev := device.NewDevice(bridgeTUN{dev: tun}, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
+	defer dev.Close()
+	if err := dev.IpcSet(request); err != nil {
+		t.Fatalf("device rejected generated configuration: %v", err)
+	}
+	dump, err := dev.IpcGet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"rekey_after_time=20-30", "rekey_timeout=3", "reject_after_time=90-120", "keepalive_timeout=8-10", "max_handshake_attempts=5-9", "persistent_keepalive_interval=22-30"} {
+		if !strings.Contains(dump, want+"\n") {
+			t.Errorf("device UAPI missing %s", want)
+		}
+	}
+}
+
+func TestAWGRejectsInvalidTimingAndKeepaliveRanges(t *testing.T) {
+	raw, err := os.ReadFile(profileTestdataPath(t, "awg31.valid.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"", "30-20", "1-2-3", "-1", "0-4294967295", "secret-value"} {
+		input := strings.Replace(string(raw), "[Interface]", "[Interface]\nRekeyAfterTime = "+value, 1)
+		_, err := awgcfg.Parse([]byte(input))
+		if err == nil {
+			t.Errorf("invalid timing range accepted")
+		} else if value == "secret-value" && strings.Contains(err.Error(), value) {
+			t.Error("error exposed input")
+		}
+	}
+	for _, value := range []string{"30-20", "22-65536", "1-2-3"} {
+		input := strings.Replace(string(raw), "PersistentKeepalive = 25", "PersistentKeepalive = "+value, 1)
+		if _, err := awgcfg.Parse([]byte(input)); err == nil {
+			t.Errorf("invalid keepalive range accepted: %s", value)
+		}
+	}
+}
+
 func TestIpcRequestOmitsJ1ITimeUnknownToV3(t *testing.T) {
 	raw, err := os.ReadFile(profileTestdataPath(t, "awg31.j1.conf"))
 	if err != nil {
@@ -136,6 +197,10 @@ func TestIpcRequestOmitsJ1ITimeUnknownToV3(t *testing.T) {
 	if strings.Contains(request, "j1=") || strings.Contains(request, "itime=") {
 		t.Fatalf("v3 UAPI must not receive j1/itime: %s", request)
 	}
+	sidecar := NewNetstackSidecar()
+	if err := sidecar.Start(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "J1") {
+		t.Fatal("runtime must reject unsupported fields instead of silently dropping them")
+	}
 }
 
 func TestLoopbackSidecarUDPAssociate(t *testing.T) {
@@ -144,6 +209,11 @@ func TestLoopbackSidecarUDPAssociate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer echo.Close()
+	silent, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
 	go func() {
 		buf := make([]byte, 2048)
 		for {
@@ -152,6 +222,7 @@ func TestLoopbackSidecarUDPAssociate(t *testing.T) {
 				return
 			}
 			_, _ = echo.WriteTo(buf[:n], addr)
+			_, _ = echo.WriteTo([]byte("second-response"), addr)
 		}
 	}()
 
@@ -194,20 +265,27 @@ func TestLoopbackSidecarUDPAssociate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer udpConn.Close()
+	relayAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: bindPort}
+	silentAddr := silent.LocalAddr().(*net.UDPAddr)
+	if _, err := udpConn.WriteTo(encodeSOCKSUDP(silentAddr.IP.String(), silentAddr.Port, []byte("no-response")), relayAddr); err != nil {
+		t.Fatal(err)
+	}
 	payload := []byte("ping-awg")
 	packet := encodeSOCKSUDP(echoAddr.IP.String(), echoAddr.Port, payload)
-	if _, err := udpConn.WriteTo(packet, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: bindPort}); err != nil {
+	if _, err := udpConn.WriteTo(packet, relayAddr); err != nil {
 		t.Fatal(err)
 	}
 	_ = udpConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	buf := make([]byte, 2048)
-	n, _, err := udpConn.ReadFrom(buf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _, data, ok := parseSOCKSUDP(buf[:n])
-	if !ok || string(data) != "ping-awg" {
-		t.Fatalf("udp echo = %q ok=%v", data, ok)
+	for _, expected := range []string{"ping-awg", "second-response"} {
+		n, _, err := udpConn.ReadFrom(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _, data, ok := parseSOCKSUDP(buf[:n])
+		if !ok || string(data) != expected {
+			t.Fatalf("udp echo = %q ok=%v", data, ok)
+		}
 	}
 }
 

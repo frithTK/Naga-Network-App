@@ -318,6 +318,14 @@ void main() {
       24,
     );
     expect(
+      nagaHomeLatencyMs(
+        selectedNode: 'Amsterdam',
+        nodes: groups.last.nodes,
+        connected: true,
+      ),
+      isNull,
+    );
+    expect(
       nagaMergeProbedNodes(groups.first.nodes, [
         UnifiedNode(
           id: groups.first.nodes.single.id,

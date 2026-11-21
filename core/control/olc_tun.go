@@ -76,18 +76,15 @@ func (c *RuntimeController) bringUpDirectOlcTunnelLocked(profileID string, cfg *
 	}
 	binary, err := engineolc.DiscoverTunnel(c.HevBinary)
 	if err != nil {
-		_ = engineolc.RestoreLink(osExecer{}, link)
-		return engineolc.LinkState{}, err
+		return engineolc.LinkState{}, errors.Join(err, engineolc.RemoveRoomBypasses(osExecer{}, link))
 	}
 	configPath, err := engineolc.WriteTunnelConfig(olcprofile.ConfigDir(c.Store.Root, profileID))
 	if err != nil {
-		_ = engineolc.RestoreLink(osExecer{}, link)
-		return engineolc.LinkState{}, err
+		return engineolc.LinkState{}, errors.Join(err, engineolc.RemoveRoomBypasses(osExecer{}, link))
 	}
 	cmd := exec.Command(binary, configPath)
 	if err := cmd.Start(); err != nil {
-		_ = engineolc.RestoreLink(osExecer{}, link)
-		return engineolc.LinkState{}, err
+		return engineolc.LinkState{}, errors.Join(err, engineolc.RemoveRoomBypasses(osExecer{}, link))
 	}
 	c.olcHev = cmd
 	done := make(chan struct{})
@@ -100,8 +97,7 @@ func (c *RuntimeController) bringUpDirectOlcTunnelLocked(profileID string, cfg *
 		_ = cmd.Process.Kill()
 		<-done
 		c.olcHev = nil
-		_ = engineolc.RestoreLink(osExecer{}, link)
-		return engineolc.LinkState{}, err
+		return engineolc.LinkState{}, errors.Join(err, engineolc.RemoveRoomBypasses(osExecer{}, link))
 	}
 	if err := engineolc.EngageDefault(execer, link); err != nil {
 		_ = engineolc.RestoreLink(osExecer{}, link)
@@ -122,9 +118,8 @@ func pinOlcRoomContext(ctx context.Context, execer engineolc.Execer, cfg *olcpro
 		return engineolc.LinkState{}, err
 	}
 	link.RoomIPs = roomAddressesContext(ctx, cfg)
-	if err := engineolc.BypassRoom(execer, link); err != nil {
-		_ = engineolc.RestoreLink(restoreExecer(execer), link)
-		return engineolc.LinkState{}, err
+	if err := engineolc.BypassRoom(execer, &link); err != nil {
+		return engineolc.LinkState{}, errors.Join(err, engineolc.RemoveRoomBypasses(restoreExecer(execer), link))
 	}
 	return link, nil
 }

@@ -1,6 +1,7 @@
 package amneziawg
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -10,7 +11,7 @@ import (
 	"time"
 )
 
-type dialFunc func(network, address string) (net.Conn, error)
+type dialFunc func(context.Context, string, string) (net.Conn, error)
 
 const (
 	socksVersion      = 5
@@ -19,17 +20,23 @@ const (
 	socksATYPIPv4     = 1
 	socksATYPDomain   = 3
 	socksATYPIPv6     = 4
+	maxUDPFlows       = 64
+	maxUDPQueue       = 8
+	udpFlowIdle       = 30 * time.Second
 )
 
 type socksServer struct {
-	listener net.Listener
-	dial     dialFunc
-	mu       sync.Mutex
-	closed   bool
+	listener    net.Listener
+	dial        dialFunc
+	ctx         context.Context
+	cancel      context.CancelFunc
+	mu          sync.Mutex
+	connections map[net.Conn]struct{}
 }
 
 func serveSOCKS5(listener net.Listener, dial dialFunc) *socksServer {
-	server := &socksServer{listener: listener, dial: dial}
+	ctx, cancel := context.WithCancel(context.Background())
+	server := &socksServer{listener: listener, dial: dial, ctx: ctx, cancel: cancel, connections: make(map[net.Conn]struct{})}
 	go server.loop()
 	return server
 }
@@ -40,8 +47,11 @@ func (s *socksServer) Addr() string {
 
 func (s *socksServer) Close() error {
 	s.mu.Lock()
-	s.closed = true
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	s.cancel()
+	for conn := range s.connections {
+		_ = conn.Close()
+	}
 	return s.listener.Close()
 }
 
@@ -51,12 +61,26 @@ func (s *socksServer) loop() {
 		if err != nil {
 			return
 		}
+		s.mu.Lock()
+		if s.ctx.Err() != nil {
+			s.mu.Unlock()
+			_ = conn.Close()
+			return
+		}
+		s.connections[conn] = struct{}{}
+		s.mu.Unlock()
 		go s.handle(conn)
 	}
 }
 
 func (s *socksServer) handle(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+		s.mu.Lock()
+		delete(s.connections, conn)
+		s.mu.Unlock()
+	}()
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	header := make([]byte, 2)
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return
@@ -100,7 +124,10 @@ func (s *socksServer) handleConnect(conn net.Conn, atyp byte) {
 	}
 	port := binary.BigEndian.Uint16(portBuf)
 	target := net.JoinHostPort(host, strconv.Itoa(int(port)))
-	remote, err := s.dial("tcp", target)
+	_ = conn.SetReadDeadline(time.Time{})
+	ctx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
+	defer cancel()
+	remote, err := s.dial(ctx, "tcp", target)
 	if err != nil {
 		_, _ = conn.Write([]byte{socksVersion, 5, 0, 1, 0, 0, 0, 0, 0, 0})
 		return
@@ -129,6 +156,7 @@ func (s *socksServer) handleAssociate(conn net.Conn, atyp byte) {
 	if _, err := io.ReadFull(conn, make([]byte, 2)); err != nil {
 		return
 	}
+	_ = conn.SetReadDeadline(time.Time{})
 	udpConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		_, _ = conn.Write([]byte{socksVersion, 1, 0, 1, 0, 0, 0, 0, 0, 0})
@@ -144,16 +172,29 @@ func (s *socksServer) handleAssociate(conn net.Conn, atyp byte) {
 		return
 	}
 	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(s.ctx)
+	defer cancel()
 	go func() {
-		s.relayUDP(udpConn)
+		s.relayUDP(ctx, udpConn)
 		close(done)
 	}()
 	_, _ = io.Copy(io.Discard, conn)
+	cancel()
 	_ = udpConn.Close()
 	<-done
 }
 
-func (s *socksServer) relayUDP(udpConn net.PacketConn) {
+type udpFlow struct {
+	out  chan []byte
+	done chan struct{}
+}
+
+func (s *socksServer) relayUDP(ctx context.Context, udpConn net.PacketConn) {
+	ctx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	defer func() { cancel(); wg.Wait() }()
+	flows := make(map[string]*udpFlow)
+	var client net.Addr
 	buf := make([]byte, 65535)
 	for {
 		n, clientAddr, err := udpConn.ReadFrom(buf)
@@ -164,24 +205,86 @@ func (s *socksServer) relayUDP(udpConn net.PacketConn) {
 		if !ok || len(payload) == 0 {
 			continue
 		}
+		if client == nil {
+			client = clientAddr
+		}
+		if client.String() != clientAddr.String() {
+			continue
+		}
 		target := net.JoinHostPort(host, strconv.Itoa(port))
-		remote, err := s.dial("udp", target)
-		if err != nil {
-			continue
+		for key, flow := range flows {
+			select {
+			case <-flow.done:
+				delete(flows, key)
+			default:
+			}
 		}
-		_ = remote.SetDeadline(time.Now().Add(5 * time.Second))
-		if _, err := remote.Write(payload); err != nil {
-			_ = remote.Close()
-			continue
+		flow := flows[target]
+		if flow == nil {
+			if len(flows) >= maxUDPFlows {
+				continue
+			}
+			flow = &udpFlow{out: make(chan []byte, maxUDPQueue), done: make(chan struct{})}
+			flows[target] = flow
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer close(flow.done)
+				s.runUDPFlow(ctx, udpConn, clientAddr, host, port, target, flow)
+			}()
 		}
-		resp := make([]byte, 65535)
-		rn, err := remote.Read(resp)
-		_ = remote.Close()
-		if err != nil || rn == 0 {
-			continue
+		if len(flow.out) < cap(flow.out) {
+			flow.out <- append([]byte(nil), payload...)
 		}
-		packet := encodeSOCKSUDP(host, port, resp[:rn])
-		_, _ = udpConn.WriteTo(packet, clientAddr)
+	}
+}
+
+func (s *socksServer) runUDPFlow(ctx context.Context, local net.PacketConn, client net.Addr, host string, port int, target string, flow *udpFlow) {
+	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	remote, err := s.dial(dialCtx, "udp", target)
+	cancel()
+	if err != nil {
+		return
+	}
+	received := make(chan struct{}, 1)
+	readDone := make(chan struct{})
+	defer func() { _ = remote.Close(); <-readDone }()
+	go func() {
+		defer close(readDone)
+		buf := make([]byte, 65535)
+		for {
+			n, err := remote.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err := local.WriteTo(encodeSOCKSUDP(host, port, buf[:n]), client); err != nil {
+				return
+			}
+			select {
+			case received <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	idle := time.NewTimer(udpFlowIdle)
+	defer idle.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-readDone:
+			return
+		case <-idle.C:
+			return
+		case <-received:
+			idle.Reset(udpFlowIdle)
+		case payload := <-flow.out:
+			_ = remote.SetWriteDeadline(time.Now().Add(time.Second))
+			if _, err := remote.Write(payload); err != nil {
+				return
+			}
+			idle.Reset(udpFlowIdle)
+		}
 	}
 }
 

@@ -69,7 +69,8 @@ type RuntimeController struct {
 	probeCleanupBudget     time.Duration // test override for owned cleanup grace
 	// AWGFactory builds the userspace AmneziaWG sidecar. Tests inject a
 	// loopback double; production uses netstack + SOCKS5.
-	AWGFactory awgengine.Factory
+	AWGFactory   awgengine.Factory
+	awgFactoryMu sync.Mutex
 
 	probeCache map[string]ProbeCacheEntry
 	// Lock order is mu -> probeMu. Job workers only take probeMu to publish;
@@ -87,6 +88,7 @@ type RuntimeController struct {
 	healthFailCount   int
 	lastObservedClass policy.NetworkClass
 	awgSidecars       []awgengine.Sidecar
+	awgProbers        map[string]awgengine.HTTPSProber
 	olcProc           *engineolc.Command
 	olcProbeCancel    context.CancelFunc
 	androidBridge     *androidvpn.Bridge
@@ -140,6 +142,7 @@ type RuntimeSnapshot struct {
 	ActiveProtocol    string `json:"active_protocol,omitempty"`
 	ActiveLatency     int    `json:"active_latency_ms,omitempty"`
 	ActiveNodeStatus  string `json:"active_node_status,omitempty"`
+	AccessState       string `json:"access_state,omitempty"`
 	FailoverMessage   string `json:"failover_message,omitempty"`
 }
 
@@ -275,6 +278,10 @@ func (c *RuntimeController) startHoldingLock(
 		c.sessionIDs = nil
 		c.resetProbeStateLocked()
 	}
+	if err := c.restoreDNSLocked(); err != nil {
+		c.lastError = safeRuntimeError(err)
+		return c.snapshotLocked(), err
+	}
 
 	*stage = "load_profile"
 	value, err := c.Store.Load(profileID)
@@ -311,6 +318,8 @@ type candidateProbeResult struct {
 	candidate policy.Candidate
 	latency   int
 	err       error
+	source    string
+	target    string
 }
 
 func candidateProbeGroups(candidates []policy.Candidate, connectionPolicy policy.ConnectionPolicy) [][]policy.Candidate {
@@ -657,21 +666,20 @@ func (c *RuntimeController) Stop() (snapshot RuntimeSnapshot, resultErr error) {
 		c.recoveryCancel = nil
 	}
 	if c.runtime == nil {
+		var dnsErr error
 		if !olcEngine {
-			if err := c.restoreDNSLocked(); err != nil {
-				c.lastError = safeRuntimeError(err)
-				return c.snapshotLocked(), err
-			}
+			dnsErr = c.restoreDNSLocked()
 		}
-		if err := c.stopSidecarsLocked(); err != nil {
-			c.lastError = safeRuntimeError(err)
-			return c.snapshotLocked(), err
-		}
+		sidecarErr := c.stopSidecarsLocked()
 		c.profileID = ""
 		c.runtimeAliases = nil
 		c.sessionIDs = nil
 		c.resetProbeStateLocked()
 		c.lastError = ""
+		if err := errors.Join(dnsErr, sidecarErr); err != nil {
+			c.lastError = safeRuntimeError(err)
+			return c.snapshotLocked(), err
+		}
 		return c.snapshotLocked(), nil
 	}
 	dnsErr := c.restoreDNSLocked()
@@ -746,7 +754,7 @@ func (c *RuntimeController) Select(profileID, target string) (snapshot RuntimeSn
 		} else {
 			available, err := profileContainsSelectTarget(runtimeConfig, target)
 			if err != nil || !available {
-				if !c.knownRuntimeTargetLocked(target) && !awgcfg.IsLeafTag(target) {
+				if !envelopeAmneziaSelected(value.Config, target) && !c.knownRuntimeTargetLocked(target) {
 					return c.snapshotLocked(), errors.New("selected node is not available in profile")
 				}
 			}
@@ -760,6 +768,12 @@ func (c *RuntimeController) Select(profileID, target string) (snapshot RuntimeSn
 	switcher, ok := c.runtime.(engine.SelectorSwitcher)
 	if !ok {
 		return c.snapshotLocked(), errors.New("runtime does not support hot node selection")
+	}
+	if standby, ok := c.awgProbers[runtimeTarget].(*deferredAWG); ok {
+		if err := c.activateStandbyAWGLocked(runtimeTarget, standby); err != nil {
+			c.lastError = awgcfg.SafeError(err)
+			return c.snapshotLocked(), err
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -913,7 +927,7 @@ func (c *RuntimeController) persistSelectedModeLocked(sourceTag string) {
 		sourceTag = awgcfg.LeafTag
 	} else {
 		available, err := profile.ContainsNode(profile.RuntimeSingBoxConfig(value.Config), sourceTag)
-		if err != nil || !available {
+		if (err != nil || !available) && !envelopeAmneziaSelected(value.Config, sourceTag) {
 			return
 		}
 	}
@@ -935,15 +949,17 @@ func (c *RuntimeController) IsRuntimeActiveLocked() bool {
 func (c *RuntimeController) restoreDNSLocked() error {
 	var result error
 	if c.dnsRestore != nil {
-		restore := c.dnsRestore
-		c.dnsRestore = nil
-		result = restore()
+		if err := c.dnsRestore(); err != nil {
+			result = err
+		} else {
+			c.dnsRestore = nil
+		}
 	}
 	if c.proxyRestore != nil {
-		restore := c.proxyRestore
-		c.proxyRestore = nil
-		if err := restore(); err != nil {
+		if err := c.proxyRestore(); err != nil {
 			result = errors.Join(result, err)
+		} else {
+			c.proxyRestore = nil
 		}
 	}
 	return result
@@ -1084,7 +1100,23 @@ func (c *RuntimeController) snapshotLocked() RuntimeSnapshot {
 		} else if c.activeRuntimeTag != "" {
 			c.applyProbeNodeLocked(&snapshot)
 		}
-		if entry, ok := c.activeProbeEntryLocked(); ok {
+		entry, measured := c.activeProbeEntryLocked()
+		if c.awgProbers[c.activeRuntimeTag] != nil {
+			// AWG status is based on the current session's health check.
+			// A standalone probe may have used a different route or target.
+			entry, measured = c.probeCache[c.activeRuntimeTag]
+			snapshot.ActiveLatency = 0
+			if snapshot.Status == string(engine.Connected) && !c.startingOverlay {
+				snapshot.AccessState = "checking"
+				if measured {
+					snapshot.AccessState = "unconfirmed"
+					if entry.Status == ProbeHealthy {
+						snapshot.AccessState = "verified"
+					}
+				}
+			}
+		}
+		if measured {
 			switch entry.Status {
 			case ProbeHealthy:
 				if entry.LatencyMS > 0 {

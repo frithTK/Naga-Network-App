@@ -2,7 +2,14 @@
 
 package olcrtc
 
-import "strings"
+import (
+	"errors"
+	"net"
+	"strings"
+)
+
+// A dedicated protocol value lets cleanup match the exact route we created.
+const roomRouteProtocol = "186"
 
 // CaptureLink reads the current IPv4 default route and IPv6 default lines.
 func CaptureLink(exec Execer) (LinkState, error) {
@@ -29,16 +36,38 @@ func CaptureLink(exec Execer) (LinkState, error) {
 
 // BypassRoom pins each address to the current gateway so olcrtc can still
 // reach the room after the default route moves into the tunnel.
-func BypassRoom(exec Execer, state LinkState) error {
+func BypassRoom(exec Execer, state *LinkState) error {
+	hasIPv4, hasIPv6 := false, false
 	for _, ip := range state.RoomIPs {
 		if ip == nil || ip.IsLoopback() {
 			continue
 		}
-		if err := exec.Run("ip", "route", "replace", ip.String()+"/32", "via", state.Route.Gateway, "dev", state.Route.Device); err != nil {
+		ip4 := ip.To4()
+		if ip4 == nil {
+			hasIPv6 = ip.To16() != nil || hasIPv6
+			continue
+		}
+		hasIPv4 = true
+		if err := exec.Run("ip", "route", "add", ip4.String()+"/32", "via", state.Route.Gateway, "dev", state.Route.Device, "proto", roomRouteProtocol); err != nil {
 			return err
 		}
+		state.OwnedRoomIPs = append(state.OwnedRoomIPs, append(net.IP(nil), ip4...))
+	}
+	if hasIPv6 && !hasIPv4 {
+		return errors.New("olcRTC: no IPv4 room address is available for the current tunnel")
 	}
 	return nil
+}
+
+// RemoveRoomBypasses removes only exact routes created by BypassRoom.
+func RemoveRoomBypasses(exec Execer, state LinkState) error {
+	var result error
+	for _, ip := range state.OwnedRoomIPs {
+		if ip4 := ip.To4(); ip4 != nil {
+			result = errors.Join(result, exec.Run("ip", "route", "del", ip4.String()+"/32", "via", state.Route.Gateway, "dev", state.Route.Device, "proto", roomRouteProtocol))
+		}
+	}
+	return result
 }
 
 // EngageDefault moves the default route to the tunnel, drops IPv6 defaults,
@@ -90,11 +119,5 @@ func RestoreLink(exec Execer, state LinkState) error {
 	if err := exec.Run("resolvectl", "revert", TunnelIface); err != nil && result == nil {
 		result = err
 	}
-	for _, ip := range state.RoomIPs {
-		if ip == nil {
-			continue
-		}
-		_ = exec.Run("ip", "route", "del", ip.String()+"/32")
-	}
-	return restoreError(result)
+	return restoreError(errors.Join(result, RemoveRoomBypasses(exec, state)))
 }

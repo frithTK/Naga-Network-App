@@ -4,6 +4,30 @@ import 'package:http/testing.dart';
 import 'package:naga_network/control_plane_client.dart';
 
 void main() {
+  test(
+    'partial olcRTC availability is preserved in preview and saved profile',
+    () {
+      final preview = ProfilePreview.fromJson({
+        'olcrtc_available': true,
+        'olcrtc_incomplete': true,
+        'amnezia_unsupported': true,
+      });
+      final saved = StoredProfileSummary.fromJson({
+        'olcrtc_available': true,
+        'olcrtc_incomplete': true,
+        'amnezia_unsupported': true,
+      });
+      expect(preview.olcrtcAvailable, isTrue);
+      expect(preview.olcrtcIncomplete, isTrue);
+      expect(preview.amneziaUnsupported, isTrue);
+      expect(saved.olcrtcAvailable, isTrue);
+      expect(saved.olcrtcIncomplete, isTrue);
+      expect(saved.amneziaUnsupported, isTrue);
+      expect(ProfilePreview.fromJson({}).olcrtcIncomplete, isFalse);
+      expect(StoredProfileSummary.fromJson({}).olcrtcIncomplete, isFalse);
+    },
+  );
+
   test('listProfiles maps 401 to ControlPlaneException', () async {
     final client = ControlPlaneClient(
       baseUrl: 'http://127.0.0.1:8765',

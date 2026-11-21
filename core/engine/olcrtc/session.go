@@ -14,11 +14,13 @@ type Execer interface {
 
 // LinkState is what stop must undo. Room IPs are not logged by the caller.
 type LinkState struct {
-	Route    DefaultRoute
-	IPv6     []string
-	RoomIPs  []net.IP
-	DNSLink  string
-	DNSSaved string
+	Route   DefaultRoute
+	IPv6    []string
+	RoomIPs []net.IP
+	// OwnedRoomIPs contains only routes successfully created by this session.
+	OwnedRoomIPs []net.IP
+	DNSLink      string
+	DNSSaved     string
 }
 
 func dnsServers(text string) []string {

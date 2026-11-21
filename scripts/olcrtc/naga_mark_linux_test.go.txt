@@ -1,0 +1,200 @@
+//go:build linux && !android
+
+package main
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net"
+	"os"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/openlibrecommunity/olcrtc/internal/protect"
+)
+
+func TestNagaRejectsInvalidSocketMarks(t *testing.T) {
+	for _, mark := range []string{"0", "-1", "4294967296", "invalid"} {
+		if err := nagaInstallSocketMark(mark, false); err == nil {
+			t.Fatalf("accepted invalid mark %q", mark)
+		}
+	}
+}
+
+func TestNagaRequiredMarkMissing(t *testing.T) {
+	if err := nagaInstallSocketMark("", true); err == nil {
+		t.Fatal("a missing required socket mark must fail closed")
+	}
+}
+
+func TestNagaMarkRefusal(t *testing.T) {
+	if os.Getenv("NAGA_OLCRTC_MARK_REFUSAL_TEST") != "1" {
+		t.Skip("requires dropped socket-mark capabilities")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := protect.NewDialer().DialContext(ctx, "tcp4", "127.0.0.1:9")
+	if conn != nil {
+		conn.Close()
+	}
+	if !errors.Is(err, protect.ErrProtectorRejected) {
+		t.Fatalf("socket marking must fail closed, got %v", err)
+	}
+}
+
+// Run only inside the network namespace prepared by test-linux-mark.sh.
+func TestNagaMarkedRoutes(t *testing.T) {
+	if os.Getenv("NAGA_OLCRTC_MARK_ROUTE_TEST") != "1" {
+		t.Skip("requires isolated routing namespace")
+	}
+	if !protect.HasProtector() {
+		t.Fatal("socket protector was not installed")
+	}
+	const target = "198.18.0.2"
+	tcp, err := net.Listen("tcp4", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcp.Close()
+	tcpAddress := net.JoinHostPort(target, strconv.Itoa(tcp.Addr().(*net.TCPAddr).Port))
+	if conn, err := net.DialTimeout("tcp4", tcpAddress, time.Second); err == nil {
+		conn.Close()
+		t.Fatal("unmarked TCP unexpectedly reached the test endpoint")
+	}
+	accepted := make(chan error, 1)
+	go func() {
+		conn, err := tcp.Accept()
+		if err == nil {
+			_, err = conn.Write([]byte("ok"))
+			conn.Close()
+		}
+		accepted <- err
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn, err := protect.NewDialer().DialContext(ctx, "tcp4", tcpAddress)
+	if err != nil {
+		t.Fatalf("protected TCP: %v", err)
+	}
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	got, err := io.ReadAll(conn)
+	conn.Close()
+	if err != nil || string(got) != "ok" {
+		t.Fatalf("protected TCP payload: %q, %v", got, err)
+	}
+	if err := <-accepted; err != nil {
+		t.Fatal(err)
+	}
+
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP(target)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	protectedNet, err := protect.NewProtectedNet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, err := protectedNet.ListenPacket("udp4", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("protected Pion UDP socket: %v", err)
+	}
+	defer packet.Close()
+	remote := &net.UDPAddr{IP: net.ParseIP(target), Port: udp.LocalAddr().(*net.UDPAddr).Port}
+	if _, err := packet.WriteTo([]byte("udp"), remote); err != nil {
+		t.Fatalf("protected Pion UDP send: %v", err)
+	}
+	udp.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 8)
+	n, _, err := udp.ReadFromUDP(buf)
+	if err != nil || string(buf[:n]) != "udp" {
+		t.Fatalf("protected Pion UDP receive: %v", err)
+	}
+
+	// Exercise the resolver's own protected DNS transport, not only Pion's
+	// datagram adapter. Exchange relays raw DNS bytes without parsing them.
+	answer := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 32)
+		n, peer, err := udp.ReadFromUDP(buf)
+		if err == nil {
+			_, err = udp.WriteToUDP(buf[:n], peer)
+		}
+		answer <- err
+	}()
+	resolver := protect.NewResolver(net.JoinHostPort(target, strconv.Itoa(udp.LocalAddr().(*net.UDPAddr).Port)))
+	response, err := resolver.Exchange(ctx, []byte("dns-packet"))
+	if err != nil || string(response) != "dns-packet" {
+		t.Fatalf("protected DNS transport: %v", err)
+	}
+	if err := <-answer; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNagaMarkedIPv6Routes(t *testing.T) {
+	if os.Getenv("NAGA_OLCRTC_MARK_ROUTE_TEST") != "1" {
+		t.Skip("requires isolated routing namespace")
+	}
+	const target = "2001:db8::2"
+	tcp, err := net.Listen("tcp6", "[::]:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcp.Close()
+	address := net.JoinHostPort(target, strconv.Itoa(tcp.Addr().(*net.TCPAddr).Port))
+	if conn, err := net.DialTimeout("tcp6", address, time.Second); err == nil {
+		conn.Close()
+		t.Fatal("unmarked IPv6 TCP unexpectedly reached the test endpoint")
+	}
+	accepted := make(chan error, 1)
+	go func() {
+		conn, err := tcp.Accept()
+		if err == nil {
+			_, err = conn.Write([]byte("ok"))
+			conn.Close()
+		}
+		accepted <- err
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn, err := protect.NewDialer().DialContext(ctx, "tcp6", address)
+	if err != nil {
+		t.Fatalf("protected IPv6 TCP: %v", err)
+	}
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	got, err := io.ReadAll(conn)
+	conn.Close()
+	if err != nil || string(got) != "ok" {
+		t.Fatalf("protected IPv6 TCP payload: %q, %v", got, err)
+	}
+	if err := <-accepted; err != nil {
+		t.Fatal(err)
+	}
+	udp, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.ParseIP(target)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	network, err := protect.NewProtectedNet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, err := network.ListenPacket("udp6", "[::]:0")
+	if err != nil {
+		t.Fatalf("protected IPv6 UDP: %v", err)
+	}
+	defer packet.Close()
+	remote := &net.UDPAddr{IP: net.ParseIP(target), Port: udp.LocalAddr().(*net.UDPAddr).Port}
+	if _, err := packet.WriteTo([]byte("udp6"), remote); err != nil {
+		t.Fatalf("protected IPv6 UDP send: %v", err)
+	}
+	udp.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 8)
+	n, _, err := udp.ReadFromUDP(buf)
+	if err != nil || string(buf[:n]) != "udp6" {
+		t.Fatalf("protected IPv6 UDP receive: %v", err)
+	}
+}
