@@ -2180,6 +2180,8 @@ class _DashboardPageState extends State<DashboardPage>
   Timer? _profileUpdater;
   bool _isImportingProfile = false;
   bool _runtimeRequestInFlight = false;
+  bool _connectionPolicySaveInFlight = false;
+  bool _autoSelectionInFlight = false;
   int _runtimeMisses = 0;
   bool _installStatusRequestInFlight = false;
   bool _autoUpdate = true;
@@ -2199,6 +2201,7 @@ class _DashboardPageState extends State<DashboardPage>
   String? _updateError;
   UpdateCheckResult? _updateCheck;
   bool _olcrtcReady = true;
+  bool _liveProfileImport = false;
 
   bool get _hasProfile => _profileId != null || _profileUrl.isNotEmpty;
 
@@ -2322,6 +2325,7 @@ class _DashboardPageState extends State<DashboardPage>
       setState(() {
         _controlVersion = health.version;
         _olcrtcReady = health.olcrtcReady;
+        _liveProfileImport = health.liveProfileImport;
       });
     } on ControlPlaneException {
       // Banner stays quiet while the control-plane is down.
@@ -2510,7 +2514,20 @@ class _DashboardPageState extends State<DashboardPage>
   RoutingPolicy get _effectiveRoutingPolicy =>
       _routingPolicy ?? const RoutingPolicy(mode: 'all_vpn', apps: []);
 
-  Future<void> _saveConnectionPolicy(ConnectionPolicy value) async {
+  Future<bool> _saveConnectionPolicy(
+    ConnectionPolicy value, {
+    bool trafficModeChange = false,
+  }) async {
+    if (_connectionPolicySaveInFlight) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Настройки подключения сохраняются.')),
+      );
+      return false;
+    }
+    _connectionPolicySaveInFlight = true;
+    if (trafficModeChange && _trafficModeError != null) {
+      setState(() => _trafficModeError = null);
+    }
     try {
       final saved = await _controlPlane.saveConnectionPolicy(value);
       if (mounted) {
@@ -2519,12 +2536,18 @@ class _DashboardPageState extends State<DashboardPage>
           _trafficModeError = null;
         });
       }
+      return true;
     } on ControlPlaneException catch (error) {
       if (mounted) {
-        setState(() => _trafficModeError = error.message);
+        if (trafficModeChange) {
+          setState(() => _trafficModeError = error.message);
+        }
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(error.message)));
       }
+      return false;
+    } finally {
+      _connectionPolicySaveInFlight = false;
     }
   }
 
@@ -2533,6 +2556,7 @@ class _DashboardPageState extends State<DashboardPage>
       return;
     }
     final current = _effectiveConnectionPolicy;
+    if (_connectionPolicy != null && trafficMode == current.trafficMode) return;
     unawaited(
       _saveConnectionPolicy(
         ConnectionPolicy(
@@ -2543,6 +2567,7 @@ class _DashboardPageState extends State<DashboardPage>
           networkClass: current.networkClass,
           tuicFallbackEnabled: current.tuicFallbackEnabled,
         ),
+        trafficModeChange: true,
       ),
     );
   }
@@ -2735,52 +2760,68 @@ class _DashboardPageState extends State<DashboardPage>
   }
 
   Future<void> _selectAutoNode() async {
-    final current = _effectiveConnectionPolicy;
-    if (current.mode != 'auto') {
-      await _saveConnectionPolicy(
-        ConnectionPolicy(
-          mode: 'auto',
-          trafficMode: current.trafficMode,
-          preferredCountry: '',
-          preferredProtocol: '',
-          networkClass: current.networkClass,
-          tuicFallbackEnabled: current.tuicFallbackEnabled,
-        ),
+    if (_status == ConnectionStatus.connecting) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Дождитесь завершения операции VPN.')),
       );
-    }
-    if (_isConnected) {
-      try {
-        final runtime = await _controlPlane.selectRuntimeAuto();
-        if (mounted) {
-          _applyRuntime(runtime);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Автовыбор из 3 наиболее подходящих серверов.'),
-            ),
-          );
-        }
-      } on ControlPlaneException catch (error) {
-        if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text(error.message)));
-        }
-      }
       return;
     }
-    final autoTag = _findNodeTag(_profileNodes?.nodes ?? const [], 'auto');
-    if (autoTag == null) {
-      if (mounted) {
+    if (_autoSelectionInFlight || _connectionPolicySaveInFlight) return;
+    _autoSelectionInFlight = true;
+    try {
+      final wasConnected = _isConnected;
+      final current = _effectiveConnectionPolicy;
+      final policyChanged = current.mode != 'auto';
+      if (policyChanged) {
+        final saved = await _saveConnectionPolicy(
+          ConnectionPolicy(
+            mode: 'auto',
+            trafficMode: current.trafficMode,
+            preferredCountry: '',
+            preferredProtocol: '',
+            networkClass: current.networkClass,
+            tuicFallbackEnabled: current.tuicFallbackEnabled,
+          ),
+        );
+        if (!saved || !mounted || _status == ConnectionStatus.connecting) {
+          return;
+        }
+      }
+      if (_isConnected) {
+        if (policyChanged) {
+          // The policy update already selected an outbound on the live runtime.
+          await _refreshRuntime();
+        } else {
+          final runtime = await _controlPlane.selectRuntimeAuto();
+          if (!mounted) return;
+          _applyRuntime(runtime);
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Автовыбор применён.')));
+        return;
+      }
+      if (wasConnected) return;
+      final autoTag = _findNodeTag(_profileNodes?.nodes ?? const [], 'auto');
+      if (autoTag == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'Автовыбор сохранён: при подключении проверим 3 наиболее подходящих сервера.',
+              'Автовыбор сохранён. При подключении проверим подходящие серверы.',
             ),
           ),
         );
+        return;
       }
-      return;
+      await _selectMode(autoTag);
+    } on ControlPlaneException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.message)));
+      }
+    } finally {
+      _autoSelectionInFlight = false;
     }
-    await _selectMode(autoTag);
   }
 
   void _onNodeProbeChanged() {
@@ -3239,7 +3280,7 @@ class _DashboardPageState extends State<DashboardPage>
         }
         return;
       }
-      final runtime = await _controlPlane.startRuntime(_profileId!);
+      final runtime = await _startRuntimeWithProgress(_profileId!);
       if (!mounted) return;
       setState(() {
         _status = switch (runtime.status) {
@@ -3294,6 +3335,33 @@ class _DashboardPageState extends State<DashboardPage>
       );
     } finally {
       _runtimeRequestInFlight = false;
+    }
+  }
+
+  Future<RuntimeSnapshot> _startRuntimeWithProgress(String profileId) async {
+    var waiting = true;
+    var reading = false;
+    final progress = Timer.periodic(const Duration(milliseconds: 650), (
+      _,
+    ) async {
+      if (reading) return;
+      reading = true;
+      try {
+        final runtime = await _controlPlane.runtimeStatus();
+        if (waiting && mounted && runtime.status == 'starting') {
+          setState(() => _runtime = runtime);
+        }
+      } on ControlPlaneException {
+        // The start request owns the final result of the operation.
+      } finally {
+        reading = false;
+      }
+    });
+    try {
+      return await _controlPlane.startRuntime(profileId);
+    } finally {
+      waiting = false;
+      progress.cancel();
     }
   }
 
@@ -3417,26 +3485,24 @@ class _DashboardPageState extends State<DashboardPage>
             );
     }
     if (!mounted || source == null) return;
-    var config = source.config?.trim();
+    final config =
+        source.config?.trim() ?? inlineProfileConfig(source.url ?? '');
     var url = source.url?.trim() ?? '';
-    if ((config == null || config.isEmpty) &&
-        url.toLowerCase().startsWith('olcrtc://')) {
-      config = url;
-      url = '';
-    }
     if (config == null || config.isEmpty) {
       final resolved = subscriptionFetchURL(url);
       if (resolved == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'Нужна HTTPS-ссылка профиля, nagavpn://install-config или файл конфига.',
+              'Вставьте HTTPS-подписку, ссылку VPN-узла или выберите файл.',
             ),
           ),
         );
         return;
       }
       url = resolved;
+    } else {
+      url = '';
     }
     setState(() => _isImportingProfile = true);
     ScaffoldMessenger.of(context).showSnackBar(
@@ -3482,9 +3548,17 @@ class _DashboardPageState extends State<DashboardPage>
       if (!mounted) return;
       final confirmed = await _confirmProfilePreview(preview);
       if (confirmed != true || !mounted) return;
-      if (!throughTunnel) {
-        await _controlPlane.stopRuntime();
-        if (nagaNeedsSystemTunnel) await AndroidVpn.instance.stop();
+      final keepSelection =
+          _isConnected || _status == ConnectionStatus.connecting;
+      if (keepSelection && !_liveProfileImport) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Для добавления профиля при активном VPN обновите локальный сервис Naga.',
+            ),
+          ),
+        );
+        return;
       }
       final saved = useServerFetch
           ? await _controlPlane.importProfile(url)
@@ -3494,24 +3568,31 @@ class _DashboardPageState extends State<DashboardPage>
               downloaded: downloaded,
             );
       if (!mounted) return;
-      setState(() {
-        _profileUrl = useServerFetch ? url : (downloaded?.url ?? '');
-        _profileId = saved.profileId;
-        _profileName = saved.profileTitle;
-        _profileProvider = saved.providerName;
-        _profilePreview = saved;
-        _runtime = null;
-        _status = ConnectionStatus.disconnected;
-      });
       final profileId = saved.profileId;
       if (profileId == null || profileId.isEmpty) {
         throw const ControlPlaneException(
           'Control-plane не вернул идентификатор профиля.',
         );
       }
-      await _loadNodes(profileId);
+      if (profileId == _profileId ||
+          !keepSelection &&
+              !_isConnected &&
+              _status != ConnectionStatus.connecting) {
+        setState(() {
+          _profileUrl = useServerFetch ? url : (downloaded?.url ?? '');
+          _profileId = profileId;
+          _profileName = saved.profileTitle;
+          _profileProvider = saved.providerName;
+          _profilePreview = saved;
+        });
+      }
+      final currentProfileId = _profileId;
+      if (currentProfileId != null) {
+        await _loadNodes(currentProfileId);
+      }
       _scheduleProfileUpdate();
       await _reloadProfiles();
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Профиль сохранён: ${saved.engine}.')),
       );
@@ -3539,7 +3620,10 @@ class _DashboardPageState extends State<DashboardPage>
         SnackBar(content: Text(_friendlyImportError(error.message))),
       );
     } finally {
-      if (mounted) setState(() => _isImportingProfile = false);
+      if (mounted) {
+        setState(() => _isImportingProfile = false);
+        unawaited(_refreshRuntime());
+      }
     }
   }
 
@@ -3568,6 +3652,16 @@ class _DashboardPageState extends State<DashboardPage>
             Text('Движок: ${preview.engine}'),
             Text('Лимит: $limit'),
             Text('Действует до: $expiry'),
+            if (preview.importedNodes case final count?) ...[
+              const SizedBox(height: 12),
+              Text('Доступно узлов: $count'),
+              for (final row in preview.ignoredNodes.entries)
+                Text('${_importReasonLabel(row.key)} · ${row.value}'),
+              if (preview.proxyOnly)
+                const Text(
+                  'Будут импортированы узлы. Маршрутизацию и DNS задаёт Naga.',
+                ),
+            ],
             if (preview.olcrtcIncomplete) ...[
               const SizedBox(height: 12),
               const Text(
@@ -3634,24 +3728,24 @@ class _DashboardPageState extends State<DashboardPage>
           .showSnackBar(const SnackBar(content: Text('Обновляем профиль…')));
     }
     try {
-      final ProfilePreview preview;
-      if (profile.hasSourceUrl) {
-        final share = await _controlPlane.shareProfile(profile.id);
-        final downloaded = await downloadSubscription(share.url);
-        preview = await _controlPlane.refreshWithConfig(profile.id, downloaded);
-      } else {
-        preview = await _controlPlane.refreshProfile(profile.id);
+      SubscriptionDownload? downloaded;
+      if (profile.hasSourceUrl && !_isConnected) {
+        try {
+          final share = await _controlPlane.shareProfile(profile.id);
+          downloaded = await downloadSubscription(share.url);
+        } on SubscriptionFetchException {
+          // Fall back to the service transport, as on first import.
+        }
       }
+      final preview = downloaded == null
+          ? await _controlPlane.refreshProfile(profile.id)
+          : await _controlPlane.refreshWithConfig(profile.id, downloaded);
       if (!mounted) return;
       setState(() {
         if (profile.id == _profileId) {
           _profileName = preview.profileTitle;
           _profileProvider = preview.providerName;
           _profilePreview = preview;
-          if (!silent) {
-            _runtime = null;
-            _status = ConnectionStatus.disconnected;
-          }
         }
       });
       if (profile.id == _profileId) {
@@ -3671,8 +3765,14 @@ class _DashboardPageState extends State<DashboardPage>
       }
       _scheduleProfileUpdate();
       await _reloadProfiles();
+      final partial = preview.ignoredNodes.keys.any(
+        (reason) => reason != 'duplicate',
+      );
       if (mounted &&
-          (!silent || preview.olcrtcIncomplete || preview.amneziaUnsupported)) {
+          (!silent ||
+              preview.olcrtcIncomplete ||
+              preview.amneziaUnsupported ||
+              partial)) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -3682,6 +3782,8 @@ class _DashboardPageState extends State<DashboardPage>
                   ? 'Профиль обновлён, но некоторые узлы olcRTC недоступны.'
                   : preview.amneziaUnsupported
                   ? 'Профиль обновлён, но узел AmneziaWG недоступен.'
+                  : partial
+                  ? 'Профиль обновлён. Некоторые узлы не поддерживаются.'
                   : 'Профиль обновлён.',
             ),
           ),
@@ -4092,17 +4194,19 @@ class _ImportProfilePanelState extends State<_ImportProfilePanel> {
                 ),
                 const SizedBox(height: 6),
                 const Text(
-                  'Вставьте HTTPS-ссылку профиля, deep-link nagavpn://install-config или выберите файл конфига.',
+                  'Вставьте подписку или ссылки на VPN-узлы. Профиль также можно загрузить из файла.',
                   style: TextStyle(color: _muted, height: 1.4),
                 ),
                 const SizedBox(height: 18),
                 TextField(
                   controller: controller,
                   autofocus: true,
-                  keyboardType: TextInputType.url,
+                  minLines: 1,
+                  maxLines: 4,
+                  keyboardType: TextInputType.multiline,
                   decoration: const InputDecoration(
                     labelText: 'Ссылка на профиль',
-                    hintText: 'https://… или nagavpn://install-config?url=…',
+                    hintText: 'https://… или vless://…',
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -4611,7 +4715,7 @@ class _NagaNodesViewState extends State<NagaNodesView> {
               leading: const _SoftIcon(Icons.bolt_rounded, accent: true),
               title: const Text('Автоматический выбор'),
               subtitle: const Text(
-                'Проверит 3 наиболее подходящих сервера и включит лучший.',
+                'Сначала проверит 3 сервера, при необходимости попробует запасные.',
                 style: TextStyle(color: _muted),
               ),
               trailing: const Icon(Icons.chevron_right_rounded),
@@ -6140,8 +6244,35 @@ String? _friendlyRuntimeError(String? error) {
   return 'Проверь профиль и попробуй подключиться ещё раз.';
 }
 
+String _importReasonLabel(String reason) => switch (reason) {
+  'final_mask' => 'Требуется Xray FinalMask',
+  'unsupported_fingerprint' => 'TLS-отпечаток не поддерживается',
+  'unsupported_protocol' => 'Протокол не поддерживается',
+  'unsupported_parameter' => 'Параметры не поддерживаются',
+  'invalid_link' => 'Некорректные ссылки',
+  'duplicate' => 'Дубликаты',
+  _ => 'Пропущенные узлы',
+};
+
 String _friendlyImportError(String message) {
   final normalized = message.toLowerCase();
+  if (normalized == 'выбранный узел отсутствует в обновлённой подписке') {
+    return 'Выбранный узел исчез из подписки. Сохранена предыдущая версия профиля.';
+  }
+  if (normalized == 'subscription returned an html page') {
+    return 'Сервер вернул веб-страницу. Проверьте ссылку подписки.';
+  }
+  if (normalized.startsWith(
+    'subscription contains no compatible proxy nodes',
+  )) {
+    return 'В подписке нет узлов, совместимых с установленным ядром.';
+  }
+  if (normalized == 'subscription has too many proxy links') {
+    return 'Подписка содержит слишком много узлов.';
+  }
+  if (normalized == 'subscription contains invalid clash yaml') {
+    return 'Сервер вернул повреждённую конфигурацию Clash YAML.';
+  }
   if (normalized.contains('control-plane') ||
       normalized.contains('связаться')) {
     return 'Не удалось связаться с Naga. Проверь, что локальный сервис запущен.';
@@ -6211,6 +6342,8 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
   List<DiagnosticLogEntry> _logs = const [];
   String? _checkError;
   bool? _systemHTTPS;
+  RuntimeConnections? _connections;
+  bool _readingConnections = false;
   Timer? _statusPoller;
 
   @override
@@ -6236,7 +6369,10 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
       final runtime = await _controlPlane.runtimeStatus();
       if (!mounted) return;
       setState(() {
-        if (!_sameDiagnosticSession(_runtime, runtime)) _systemHTTPS = null;
+        if (!_sameDiagnosticSession(_runtime, runtime)) {
+          _systemHTTPS = null;
+          _connections = null;
+        }
         _serviceHealthy = healthy;
         _runtime = runtime;
         _checkError = null;
@@ -6247,6 +6383,7 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
         _serviceHealthy = false;
         _runtime = null;
         _systemHTTPS = null;
+        _connections = null;
         _checkError = error.message;
       });
     } finally {
@@ -6277,6 +6414,9 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
       }
       if (!mounted) return;
       setState(() {
+        if (!_sameDiagnosticSession(_runtime, currentRuntime)) {
+          _connections = null;
+        }
         _serviceHealthy = healthy;
         _runtime = currentRuntime;
         _systemHTTPS = _sameDiagnosticSession(runtime, currentRuntime)
@@ -6291,15 +6431,34 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
         _serviceHealthy = false;
         _runtime = null;
         _systemHTTPS = null;
+        _connections = null;
         _checkError = error.message;
         _loading = false;
       });
     }
   }
 
+  Future<void> _refreshConnections() async {
+    setState(() => _readingConnections = true);
+    try {
+      final runtime = _runtime;
+      final connections = await _controlPlane.runtimeConnections();
+      if (mounted && _sameDiagnosticSession(runtime, _runtime)) {
+        setState(() => _connections = connections);
+      }
+    } on ControlPlaneException {
+      if (mounted) {
+        setState(() => _connections = const RuntimeConnections());
+      }
+    } finally {
+      if (mounted) setState(() => _readingConnections = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final runtime = _runtime;
+    final connections = _connections;
     final diagnosticsText = diagnosticsCopyText(
       serviceHealthy: _serviceHealthy,
       runtime: runtime,
@@ -6328,6 +6487,67 @@ class _DiagnosticsPageState extends State<_DiagnosticsPage> {
             ),
           ),
           const SizedBox(height: 16),
+          if (runtime?.status == 'connected') ...[
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(child: Text('Активные соединения')),
+                        IconButton(
+                          tooltip: 'Обновить соединения',
+                          onPressed: _readingConnections
+                              ? null
+                              : _refreshConnections,
+                          icon: const Icon(Icons.refresh_rounded),
+                        ),
+                      ],
+                    ),
+                    if (_readingConnections)
+                      const LinearProgressIndicator()
+                    else if (connections == null)
+                      const Text(
+                        'Нажмите «Обновить соединения», чтобы получить данные текущего туннеля.',
+                        style: TextStyle(color: _muted),
+                      )
+                    else if (!connections.available)
+                      const Text('Данные соединений сейчас недоступны.')
+                    else if (connections.rows.isEmpty)
+                      const Text('Сейчас нет активных соединений.')
+                    else ...[
+                      Text(
+                        'Показано: ${connections.rows.length} из ${connections.total}',
+                      ),
+                      for (final connection in connections.rows)
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(
+                            [
+                              if (connection.process.isNotEmpty)
+                                connection.process,
+                              connection.network.toUpperCase(),
+                              connection.destination,
+                            ].where((value) => value.isNotEmpty).join(' · '),
+                          ),
+                          subtitle: Text(
+                            [
+                              if (connection.rule.isNotEmpty) connection.rule,
+                              if (connection.chain.isNotEmpty)
+                                connection.chain.join(' → '),
+                              '↑ ${_formatBytes(connection.uploadBytes)} · ↓ ${_formatBytes(connection.downloadBytes)}',
+                            ].join('\n'),
+                          ),
+                        ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
           Card(
             child: Padding(
               padding: const EdgeInsets.all(20),

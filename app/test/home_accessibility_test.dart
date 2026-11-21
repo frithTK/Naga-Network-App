@@ -222,19 +222,12 @@ void main() {
   testWidgets('tun dialog keeps leftover errors without a proxy prefix', (
     tester,
   ) async {
-    await tester.pumpWidget(
-      auditShell(
-        auditHome(
-          trafficModeError: 'Не удалось связаться с локальным control-plane.',
-        ),
-      ),
-    );
+    const modeError = 'Не удалось связаться с локальным control-plane.';
+    await tester.pumpWidget(auditShell(auditHome(trafficModeError: modeError)));
+    expect(find.text(modeError), findsNothing);
     await tester.tap(find.byKey(const Key('naga-mode-settings')));
     await tester.pumpAndSettle();
-    expect(
-      find.text('Не удалось связаться с локальным control-plane.'),
-      findsWidgets,
-    );
+    expect(find.text(modeError), findsOneWidget);
     expect(
       find.textContaining('Не удалось включить системный прокси'),
       findsNothing,

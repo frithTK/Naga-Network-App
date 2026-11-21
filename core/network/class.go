@@ -4,10 +4,40 @@ package network
 import (
 	"context"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"naga.network/core/policy"
 )
+
+// LinuxObservation uses NetworkManager connection IDs to detect Wi-Fi changes
+// on one adapter. IDs are compared in memory and excluded from diagnostics.
+func LinuxObservation(ctx context.Context) Observation {
+	command := exec.CommandContext(ctx, "nmcli", "-t", "-f", "TYPE,UUID,DEVICE", "connection", "show", "--active")
+	output, err := command.Output()
+	if err != nil {
+		return Observation{Class: LinuxClass(ctx)}
+	}
+	return parseLinuxObservation(string(output))
+}
+
+func parseLinuxObservation(output string) Observation {
+	best := policy.NetworkUnknown
+	ids := make(map[policy.NetworkClass][]string)
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.SplitN(strings.TrimSpace(line), ":", 3)
+		if len(fields) != 3 || fields[1] == "" || fields[2] == "" {
+			continue
+		}
+		class := networkClassFromNMType(fields[0])
+		if class != policy.NetworkUnknown {
+			ids[class] = append(ids[class], fields[1]+":"+fields[2])
+			best = preferPhysicalClass(best, class)
+		}
+	}
+	slices.Sort(ids[best])
+	return Observation{Class: best, ID: strings.Join(ids[best], ",")}
+}
 
 // LinuxClass asks NetworkManager for the active physical connection. It is
 // deliberately best-effort: environments without nmcli use unknown rather

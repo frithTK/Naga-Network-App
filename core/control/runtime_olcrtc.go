@@ -19,7 +19,7 @@ import (
 var errOlcCleanupUncertain = errors.New("состояние очистки olcRTC не подтверждено")
 
 func (c *RuntimeController) startOlcRTCLocked(stage *string, value profile.Profile) (RuntimeSnapshot, error) {
-	*stage = "prepare_olcrtc"
+	c.setStartStage(stage, "prepare_olcrtc")
 	cfg := profile.RuntimeOlcRTC(value.Config)
 	if cfg == nil {
 		if doc, err := olcprofile.ParseDocument(value.Config); err == nil {
@@ -58,13 +58,13 @@ func (c *RuntimeController) startOlcRTCLocked(stage *string, value profile.Profi
 		c.lastError = "olcrtc config could not be written"
 		return c.snapshotLocked(), err
 	}
-	*stage = "olcrtc_binary"
+	c.setStartStage(stage, "olcrtc_binary")
 	binary, err := engineolc.DiscoverBinary(c.OlcRTCBinary)
 	if err != nil {
 		c.lastError = "olcrtc binary was not found"
 		return c.snapshotLocked(), err
 	}
-	*stage = "olcrtc_start"
+	c.setStartStage(stage, "olcrtc_start")
 	proc, err := engineolc.Start(c.startupContextLocked(), binary, yamlPath)
 	if err != nil {
 		c.lastError = safeRuntimeError(err)
@@ -81,7 +81,7 @@ func (c *RuntimeController) startOlcRTCLocked(stage *string, value profile.Profi
 		c.lastError = "olcrtc socks port was not ready"
 		return c.snapshotLocked(), err
 	}
-	*stage = "tun"
+	c.setStartStage(stage, "tun")
 	link, err := c.bringUpOlcTunnelLocked(value.ID, cfg)
 	if err != nil {
 		_ = proc.Stop()
@@ -119,7 +119,7 @@ func (c *RuntimeController) startOlcRTCLocked(stage *string, value profile.Profi
 			c.recordOlcProbeLocked(value.ID, tag, latency, err)
 		}
 	}()
-	*stage = "complete"
+	c.setStartStage(stage, "complete")
 	return c.snapshotLocked(), nil
 }
 

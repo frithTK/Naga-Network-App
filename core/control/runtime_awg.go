@@ -25,7 +25,7 @@ func (c *RuntimeController) startAmneziaOnlyLocked(stage *string, profileID stri
 		c.lastError = "amneziawg profile could not be loaded"
 		return c.snapshotLocked(), errors.New(c.lastError)
 	}
-	*stage = "prepare_profile"
+	c.setStartStage(stage, "prepare_profile")
 	session := map[string]struct{}{profileID: {}}
 	aliases := make(map[string]string)
 	candidates := make([]policy.Candidate, 0, len(awg))
@@ -129,7 +129,7 @@ func (c *RuntimeController) startAmneziaOnlyLocked(stage *string, profileID stri
 }
 
 func (c *RuntimeController) startUnifiedLocked(stage *string, profileID string, singBox, awg []profile.Profile, connectionPolicy policy.ConnectionPolicy, routing policy.RoutingPolicy) (RuntimeSnapshot, error) {
-	*stage = "prepare_profile"
+	c.setStartStage(stage, "prepare_profile")
 	// The selected AWG leaf belongs to the envelope, not to its extracted
 	// sing-box graph. Keep the persisted choice for the later candidate probe.
 	prepared := append([]profile.Profile(nil), singBox...)
@@ -279,7 +279,7 @@ func (c *RuntimeController) startAWGSidecars(stage *string, values []profile.Pro
 	life := c.startupContextLocked()
 	ctx, cancel := context.WithTimeout(life, 20*time.Second)
 	defer cancel()
-	*stage = "sidecar_start"
+	c.setStartStage(stage, "sidecar_start")
 	const batchSize = 4
 	for first := 0; first < len(values); first += batchSize {
 		last := min(first+batchSize, len(values))
@@ -415,27 +415,27 @@ func (c *RuntimeController) finishStartLocked(
 	connectionPolicy policy.ConnectionPolicy,
 	routing policy.RoutingPolicy,
 ) (RuntimeSnapshot, error) {
-	*stage = "connection_policy"
+	c.setStartStage(stage, "connection_policy")
 	connectionPolicy.NetworkClass = c.effectiveNetworkClassLocked(connectionPolicy.NetworkClass)
 	config, err := profile.ApplyConnectionPolicy(config, connectionPolicy)
 	if err != nil {
 		c.lastError = safeRuntimeError(err)
 		return c.snapshotLocked(), err
 	}
-	*stage = "traffic_mode"
+	c.setStartStage(stage, "traffic_mode")
 	config, err = profile.ApplyTrafficMode(config, connectionPolicy.TrafficMode)
 	if err != nil {
 		c.lastError = safeRuntimeError(err)
 		return c.snapshotLocked(), err
 	}
 	if connectionPolicy.TrafficMode == policy.TrafficTUN && c.TUN != nil {
-		*stage = "tun_preflight"
+		c.setStartStage(stage, "tun_preflight")
 		if err := c.TUN.CheckTUN(); err != nil {
 			c.lastError = safeRuntimeError(err)
 			return c.snapshotLocked(), err
 		}
 	}
-	*stage = "routing_policy"
+	c.setStartStage(stage, "routing_policy")
 	config, err = profile.ApplyRoutingPolicy(config, routing)
 	if err != nil {
 		c.lastError = safeRuntimeError(err)
@@ -447,7 +447,7 @@ func (c *RuntimeController) finishStartLocked(
 		c.lastError = "start cancelled"
 		return c.snapshotLocked(), errors.New("start cancelled")
 	}
-	*stage = "engine_start"
+	c.setStartStage(stage, "engine_start")
 	lifecycleContext, cancel := context.WithCancel(c.startupContextLocked())
 	runtime, effectiveConfig, err := c.startEngineWithRuleSetRetry(lifecycleContext, config, ruleSetSource)
 	if err != nil {
@@ -457,7 +457,7 @@ func (c *RuntimeController) finishStartLocked(
 	}
 	pendingInspect, inspectErr := inspectRuntimeConfig(effectiveConfig)
 	if goruntime.GOOS == "android" && connectionPolicy.TrafficMode == policy.TrafficTUN {
-		*stage = "android_hev"
+		c.setStartStage(stage, "android_hev")
 		if _, err := c.startAndroidHevLocked(profileID, androidvpn.SingBoxIPv4, androidvpn.SingBoxPort); err != nil {
 			cancel()
 			_ = runtime.Stop()
@@ -496,7 +496,7 @@ func (c *RuntimeController) finishStartLocked(
 	c.inspect = nil
 	c.lastError = ""
 	if len(runtimeCandidates) > 0 {
-		*stage = "node_health"
+		c.setStartStage(stage, "node_health")
 		err := c.probeFirstStartLocked(lifecycleContext, runtime, runtimeCandidates, connectionPolicy, probeTimeout, retryProbe)
 		if errors.Is(err, errStartAborted) {
 			return c.snapshotLocked(), nil
@@ -514,7 +514,7 @@ func (c *RuntimeController) finishStartLocked(
 	var restoreDNS func() error
 	var restoreProxy func() error
 	if connectionPolicy.TrafficMode == policy.TrafficSystemProxy {
-		*stage = "system_proxy"
+		c.setStartStage(stage, "system_proxy")
 		if c.SystemProxy == nil {
 			return c.abortStartLocked(runtime, cancel, errors.New("system proxy is not supported on this platform"))
 		}
@@ -524,7 +524,7 @@ func (c *RuntimeController) finishStartLocked(
 			return c.abortStartLocked(runtime, cancel, err)
 		}
 	} else if c.DNS != nil {
-		*stage = "dns"
+		c.setStartStage(stage, "dns")
 		restoreDNS, err = c.DNS.Configure()
 		c.dnsRestore = restoreDNS
 		if err != nil {
@@ -542,7 +542,7 @@ func (c *RuntimeController) finishStartLocked(
 	if routing.ProviderRules && c.RuleSets != nil {
 		go c.RuleSets.Watch(c.recoveryContext, ruleSetSource)
 	}
-	*stage = "complete"
+	c.setStartStage(stage, "complete")
 	return c.snapshotLocked(), nil
 }
 

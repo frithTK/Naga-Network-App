@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import 'package:naga_network/control_plane_client.dart';
@@ -132,6 +134,133 @@ void main() {
     await tester.tap(find.text('Как выбирать сервер'));
     await tester.pump();
     expect(find.text('Автоматически'), findsOneWidget);
+  });
+
+  testWidgets('saving Auto waits for the service and selects only once', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final policyResponse = Completer<http.Response>();
+    var policyWrites = 0;
+    var autoSelections = 0;
+    const runtime = '{"status":"connected","profile_id":"p1"}';
+    final client = ControlPlaneClient(
+      client: MockClient((request) async {
+        if (request.method == 'PUT' && request.url.path == '/v1/policy') {
+          policyWrites++;
+          expect(request.body, contains('"mode":"auto"'));
+          return policyResponse.future;
+        }
+        if (request.url.path == '/v1/runtime/select') {
+          autoSelections++;
+          expect(request.body, '{"auto":true}');
+          return http.Response(runtime, 200);
+        }
+        return switch (request.url.path) {
+          '/v1/profiles' => http.Response(
+            '[{"id":"p1","can_connect":true}]',
+            200,
+          ),
+          '/v1/runtime' => http.Response(runtime, 200),
+          '/v1/policy' => http.Response('{"mode":"manual_strict"}', 200),
+          '/v1/nodes' => http.Response('[]', 200),
+          _ => http.Response('{}', 200),
+        };
+      }),
+    );
+    addTearDown(client.close);
+    await tester.pumpWidget(NagaNetworkApp(controlPlane: client));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Серверы'));
+    await tester.pumpAndSettle();
+
+    final auto = find.text('Автоматический выбор');
+    final success = find.text('Автовыбор применён.');
+    await tester.tap(auto);
+    await tester.pump();
+    expect(policyWrites, 1);
+    await tester.pump(const Duration(seconds: 33));
+    expect(autoSelections, 0);
+    expect(find.byType(SnackBar), findsNothing);
+
+    policyResponse.complete(http.Response('{"mode":"auto"}', 200));
+    await tester.pumpAndSettle();
+    expect(autoSelections, 0);
+    expect(success, findsOneWidget);
+
+    await tester.tap(auto);
+    await tester.pumpAndSettle();
+    expect(policyWrites, 1);
+    expect(autoSelections, 1);
+  });
+
+  testWidgets('imports an inline proxy profile and keeps the running VPN', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    var imported = false;
+    var stopRequests = 0;
+    const link = 'hy2://test@example.invalid:443#Test';
+    const preview =
+        '{"profile_title":"Second","engine":"sing-box","can_connect":true,'
+        '"import":{"format":"uri_list","imported":1,"ignored":{"final_mask":1}}}';
+    final client = ControlPlaneClient(
+      client: MockClient((request) async {
+        switch (request.url.path) {
+          case '/v1/health':
+            return http.Response(
+              '{"status":"ok","capabilities":{"live_profile_import":true}}',
+              200,
+            );
+          case '/v1/profiles':
+            return http.Response(
+              '[{"id":"active","name":"Active","can_connect":true}'
+              '${imported ? ',{"id":"second","name":"Second","can_connect":true}' : ''}]',
+              200,
+            );
+          case '/v1/runtime':
+            return http.Response(
+              '{"status":"connected","profile_id":"active"}',
+              200,
+            );
+          case '/v1/subscriptions/preview':
+            expect(request.body, contains(link));
+            return http.Response(preview, 200);
+          case '/v1/profiles/import':
+            expect(request.body, contains(link));
+            imported = true;
+            return http.Response(
+              '{"profile_id":"second","preview":$preview}',
+              200,
+            );
+          case '/v1/runtime/stop':
+            stopRequests++;
+            return http.Response('{"status":"stopped"}', 200);
+          case '/v1/nodes':
+            return http.Response('[]', 200);
+          default:
+            return http.Response('{}', 200);
+        }
+      }),
+    );
+    addTearDown(client.close);
+    await tester.pumpWidget(
+      NagaNetworkApp(initialImportURL: link, controlPlane: client),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Доступно узлов: 1'), findsOneWidget);
+    expect(find.text('Требуется Xray FinalMask · 1'), findsOneWidget);
+    await tester.tap(find.text('Сохранить профиль'));
+    await tester.pumpAndSettle();
+    expect(imported, isTrue);
+    expect(stopRequests, 0);
+    expect(find.text('VPN подключён'), findsOneWidget);
   });
 
   testWidgets('design gallery fits mobile preview', (tester) async {
@@ -514,7 +643,9 @@ void main() {
 
     expect(find.text('Автоматический выбор'), findsOneWidget);
     expect(
-      find.text('Проверит 3 наиболее подходящих сервера и включит лучший.'),
+      find.text(
+        'Сначала проверит 3 сервера, при необходимости попробует запасные.',
+      ),
       findsOneWidget,
     );
     expect(find.text('Рекомендуемые'), findsOneWidget);

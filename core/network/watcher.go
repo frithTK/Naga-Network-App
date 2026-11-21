@@ -7,14 +7,20 @@ import (
 	"naga.network/core/policy"
 )
 
-// Watcher polls the current network class and emits a single change after
-// the class has been stable for Debounce. Unknown is used as the initial
-// baseline so the first non-unknown reading is treated as a change.
+type Observation struct {
+	Class policy.NetworkClass
+	ID    string
+}
+
+// Watcher emits a network change after an observation has been stable for
+// Debounce. Observers with an ID can detect transitions within one class.
 type Watcher struct {
-	Poll     time.Duration
-	Debounce time.Duration
-	Class    func(context.Context) policy.NetworkClass
-	OnChange func(from, to policy.NetworkClass)
+	Poll          time.Duration
+	Debounce      time.Duration
+	Class         func(context.Context) policy.NetworkClass
+	OnChange      func(from, to policy.NetworkClass)
+	Observe       func(context.Context) Observation
+	OnObservation func(from, to Observation)
 }
 
 // Run blocks until the context is cancelled.
@@ -27,14 +33,14 @@ func (w Watcher) Run(ctx context.Context) {
 	if debounce <= 0 {
 		debounce = policy.NetworkChangeDebounce
 	}
-	if w.Class == nil || w.OnChange == nil {
+	if (w.Class == nil && w.Observe == nil) || (w.OnChange == nil && w.OnObservation == nil) {
 		return
 	}
 
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
 
-	emitted := policy.NetworkUnknown
+	emitted := Observation{Class: policy.NetworkUnknown}
 	pending := emitted
 	armed := false
 	timer := time.NewTimer(debounce)
@@ -46,20 +52,28 @@ func (w Watcher) Run(ctx context.Context) {
 	}
 	timerActive := false
 
-	read := func() policy.NetworkClass {
+	read := func() Observation {
 		readCtx, cancel := context.WithTimeout(ctx, poll)
 		defer cancel()
-		return w.Class(readCtx)
+		if w.Observe != nil {
+			return w.Observe(readCtx)
+		}
+		return Observation{Class: w.Class(readCtx)}
 	}
 
 	flush := func() {
 		timerActive = false
-		if pending == emitted || pending == policy.NetworkUnknown {
+		if pending == emitted || pending.Class == policy.NetworkUnknown || pending.Class == "" {
 			return
 		}
 		from := emitted
 		emitted = pending
-		w.OnChange(from, emitted)
+		if w.OnChange != nil && from.Class != emitted.Class {
+			w.OnChange(from.Class, emitted.Class)
+		}
+		if w.OnObservation != nil {
+			w.OnObservation(from, emitted)
+		}
 	}
 
 	for {

@@ -82,7 +82,7 @@ $owner.StartPosition = 'CenterScreen'
 $owner.Show()
 $owner.Activate()
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Filter = 'VPN config (*.json;*.conf;*.txt)|*.json;*.conf;*.txt|All files (*.*)|*.*'
+$dialog.Filter = 'VPN config (*.json;*.conf;*.txt;*.yaml;*.yml)|*.json;*.conf;*.txt;*.yaml;*.yml|All files (*.*)|*.*'
 $dialog.Title = 'Naga Network'
 $dialog.CheckFileExists = $true
 $dialog.Multiselect = $false
@@ -129,9 +129,14 @@ Future<String?> _pickLinuxPath() async {
       'zenity',
       '--file-selection',
       '--title=Naga Network',
-      '--file-filter=VPN config | *.json *.conf *.txt',
+      '--file-filter=VPN config | *.json *.conf *.txt *.yaml *.yml',
     ],
-    <String>['kdialog', '--getopenfilename', '.', '*.json *.conf *.txt'],
+    <String>[
+      'kdialog',
+      '--getopenfilename',
+      '.',
+      '*.json *.conf *.txt *.yaml *.yml',
+    ],
   ];
   for (final command in commands) {
     try {

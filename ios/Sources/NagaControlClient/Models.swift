@@ -15,6 +15,20 @@ public struct ProfilePreview: Codable, Sendable, Equatable {
     public var updateIntervalSeconds: Int
     public var canConnect: Bool
     public var olcrtcAvailable: Bool
+    public var importedNodes: Int?
+    public var ignoredNodes: [String: Int] { importDetails?.ignored ?? [:] }
+    public var proxyOnly: Bool { importDetails?.proxyOnly ?? false }
+    private var importDetails: ImportDetails?
+
+    private struct ImportDetails: Codable, Sendable, Equatable {
+        var imported: Int
+        var ignored: [String: Int]?
+        var proxyOnly: Bool?
+        enum CodingKeys: String, CodingKey {
+            case imported, ignored
+            case proxyOnly = "proxy_only"
+        }
+    }
 
     public init(
         profileId: String? = nil,
@@ -42,6 +56,8 @@ public struct ProfilePreview: Codable, Sendable, Equatable {
         self.updateIntervalSeconds = updateIntervalSeconds
         self.canConnect = canConnect
         self.olcrtcAvailable = olcrtcAvailable
+        self.importedNodes = nil
+        self.importDetails = nil
     }
 
     enum CodingKeys: String, CodingKey {
@@ -57,6 +73,7 @@ public struct ProfilePreview: Codable, Sendable, Equatable {
         case updateIntervalSeconds = "update_interval_seconds"
         case canConnect = "can_connect"
         case olcrtcAvailable = "olcrtc_available"
+        case importDetails = "import"
     }
 
     public init(from decoder: any Decoder) throws {
@@ -73,6 +90,8 @@ public struct ProfilePreview: Codable, Sendable, Equatable {
         updateIntervalSeconds = try c.decodeIfPresent(Int.self, forKey: .updateIntervalSeconds) ?? 86400
         canConnect = try c.decodeIfPresent(Bool.self, forKey: .canConnect) ?? false
         olcrtcAvailable = try c.decodeIfPresent(Bool.self, forKey: .olcrtcAvailable) ?? false
+        importDetails = try c.decodeIfPresent(ImportDetails.self, forKey: .importDetails)
+        importedNodes = importDetails?.imported
     }
 }
 

@@ -76,7 +76,16 @@ class NagaHomeView extends StatelessWidget {
               'checking' => 'Туннель поднят, доступ проверяется',
               _ => 'VPN подключён',
             },
-            ConnectionStatus.connecting => 'Подключаемся…',
+            ConnectionStatus.connecting => switch (runtime?.stage) {
+              'probe_cleanup' => 'Завершаем проверку узлов…',
+              'sidecar_start' => 'Запускаем AmneziaWG…',
+              'olcrtc_start' => 'Запускаем olcRTC…',
+              'ruleset_fetch' => 'Загружаем правила маршрутизации…',
+              'engine_start' || 'android_hev' || 'tun' => 'Запускаем туннель…',
+              'node_health' => 'Проверяем доступ через узел…',
+              'dns' || 'system_proxy' => 'Применяем сетевые настройки…',
+              _ => 'Подключаемся…',
+            },
             ConnectionStatus.error => 'Не удалось подключиться',
             ConnectionStatus.disconnected => 'Готов к подключению',
           };
@@ -520,11 +529,6 @@ class _ConnectionHero extends StatelessWidget {
                   ),
                 ),
               ),
-              if (trafficModeError != null)
-                Text(
-                  trafficModeError!,
-                  style: const TextStyle(color: _warning, fontSize: 12),
-                ),
             ],
           ),
         ),

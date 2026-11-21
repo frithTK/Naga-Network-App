@@ -24,7 +24,7 @@ struct ImportProfileView: View {
                 NagaCard {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Ссылка подписки").font(NagaTheme.font(14, weight: .semibold))
-                        TextField("HTTPS-ссылка подписки", text: $urlText, axis: .vertical)
+                        TextField("HTTPS-подписка или ссылка на узел", text: $urlText, axis: .vertical)
                             .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                             .lineLimit(2...5).padding(14)
                             .background(NagaTheme.surface, in: RoundedRectangle(cornerRadius: 10))
@@ -62,6 +62,12 @@ struct ImportProfileView: View {
                             if !preview.providerName.isEmpty { Text(preview.providerName).foregroundStyle(NagaTheme.muted) }
                             Text(preview.unlimited ? "Безлимит" : NagaFormat.bytes(preview.totalBytes)).foregroundStyle(NagaTheme.muted)
                             Text(NagaFormat.expiry(preview.expireUtc)).font(NagaTheme.font(12)).foregroundStyle(NagaTheme.muted)
+                            if let count = preview.importedNodes {
+                                Text("Доступно узлов: \(count)")
+                                let ignored = preview.ignoredNodes.values.reduce(0, +)
+                                if ignored > 0 { Text("Пропущено узлов: \(ignored)").foregroundStyle(NagaTheme.warning) }
+                                if preview.proxyOnly { Text("Маршрутизацию и DNS задаёт Naga.").foregroundStyle(NagaTheme.muted) }
+                            }
                             if !preview.canConnect { Text("Проверьте срок и лимит подписки").foregroundStyle(NagaTheme.warning) }
                         }
                     }
@@ -71,10 +77,10 @@ struct ImportProfileView: View {
                 } label: {
                     HStack(spacing: 10) {
                         if model.busy { ProgressView().tint(NagaTheme.background) }
-                        Text(model.busy ? "Добавляем…" : "Добавить профиль")
+                        Text(model.busy ? "Проверяем…" : model.preview == nil ? "Продолжить" : "Добавить профиль")
                     }
                 }.buttonStyle(NagaButtonStyle()).disabled(model.busy || !hasInput)
-                Text("Поддерживаются подписки, sing-box JSON и AmneziaWG .conf.")
+                Text("Можно вставить несколько ссылок на узлы или выбрать файл конфигурации.")
                     .font(NagaTheme.font(12)).foregroundStyle(NagaTheme.muted)
             }
             .toolbar {
@@ -90,7 +96,7 @@ struct ImportProfileView: View {
                 guard let url = try result.get().first else { return }
                 try readFile(url)
             } catch {
-                errorText = "Не удалось прочитать файл. Выберите JSON или .conf."
+                errorText = "Не удалось прочитать файл конфигурации."
             }
         }
     }
@@ -100,8 +106,8 @@ struct ImportProfileView: View {
     private func readFile(_ url: URL) throws {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        guard ["json", "conf", "txt"].contains(url.pathExtension.lowercased()) else {
-            errorText = "Выберите файл .json, .conf или .txt."
+        guard ["json", "conf", "txt", "yaml", "yml"].contains(url.pathExtension.lowercased()) else {
+            errorText = "Выберите файл .json, .conf, .txt или .yaml."
             return
         }
         let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
@@ -123,19 +129,23 @@ struct ImportProfileView: View {
 
     private func checkPreview() async {
         model.lastError = nil
-        if let config = fileConfig {
+        if let config = fileConfig ?? SubscriptionLink.inlineConfig(urlText) {
             _ = await model.previewConfig(config, name: fileName)
         } else if let url = SubscriptionLink.resolve(urlText) {
             _ = await model.previewURL(url)
-        } else { errorText = "Вставьте HTTPS-ссылку подписки." }
+        } else { errorText = "Вставьте HTTPS-подписку или ссылку VPN-узла." }
     }
 
     private func save() async {
         model.lastError = nil
+        if model.preview == nil {
+            await checkPreview()
+            return
+        }
         let success: Bool
-        if let config = fileConfig { success = await model.importConfig(config, name: fileName) }
+        if let config = fileConfig ?? SubscriptionLink.inlineConfig(urlText) { success = await model.importConfig(config, name: fileName) }
         else if let url = SubscriptionLink.resolve(urlText) { success = await model.importURL(url) }
-        else { errorText = "Вставьте HTTPS-ссылку подписки."; return }
+        else { errorText = "Вставьте HTTPS-подписку или ссылку VPN-узла."; return }
         if success { dismiss() }
     }
 }

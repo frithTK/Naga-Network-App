@@ -88,3 +88,41 @@ func TestWatcherIgnoresUnknownClass(t *testing.T) {
 		t.Fatalf("unknown class triggered %d changes", changes)
 	}
 }
+
+func TestWatcherEmitsWiFiIdentityChange(t *testing.T) {
+	var mu sync.Mutex
+	current := Observation{Class: policy.NetworkWiFi, ID: "wifi-one"}
+	first := make(chan struct{}, 1)
+	got := make(chan Observation, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go Watcher{
+		Poll: 5 * time.Millisecond, Debounce: 15 * time.Millisecond,
+		Observe: func(context.Context) Observation {
+			mu.Lock()
+			defer mu.Unlock()
+			select {
+			case first <- struct{}{}:
+			default:
+			}
+			return current
+		},
+		OnObservation: func(_, next Observation) { got <- next },
+	}.Run(ctx)
+	select {
+	case <-first:
+	case <-time.After(time.Second):
+		t.Fatal("first network was not sampled")
+	}
+	mu.Lock()
+	current = Observation{Class: policy.NetworkWiFi, ID: "wifi-two"}
+	mu.Unlock()
+	select {
+	case next := <-got:
+		if next.Class != policy.NetworkWiFi || next.ID != "wifi-two" {
+			t.Fatalf("observation: %#v", next)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("same-class Wi-Fi transition was not reported")
+	}
+}

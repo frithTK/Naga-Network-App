@@ -20,7 +20,7 @@ func (c *RuntimeController) materializeProviderRuleSets(stage *string, config []
 	if err != nil || len(remotes) == 0 {
 		return config, false
 	}
-	*stage = "ruleset_fetch"
+	c.setStartStage(stage, "ruleset_fetch")
 	parent := c.startupContextLocked()
 	c.mu.Unlock()
 	ctx, cancel := context.WithTimeout(parent, 9*time.Second)

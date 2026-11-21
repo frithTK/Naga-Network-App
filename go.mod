@@ -7,6 +7,7 @@ toolchain go1.27.2
 require (
 	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260828
 	github.com/refraction-networking/utls v1.8.2
+	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.48.0
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446

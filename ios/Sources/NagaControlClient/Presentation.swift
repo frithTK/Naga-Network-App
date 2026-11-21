@@ -66,12 +66,46 @@ public enum SubscriptionLink {
         let raw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let components = URLComponents(string: raw), let scheme = components.scheme?.lowercased() else { return nil }
         if scheme == "https", !(components.host ?? "").isEmpty { return raw }
-        guard scheme == "nagavpn" else { return nil }
+        if scheme == "hiddify" {
+            let prefix = "hiddify://import/"
+            guard raw.lowercased().hasPrefix(prefix) else { return nil }
+            let target = String(raw.dropFirst(prefix.count).prefix(while: { $0 != "#" }))
+            return httpsTarget(target) ?? target.removingPercentEncoding.flatMap(httpsTarget)
+        }
+        let action: String
+        switch scheme {
+        case "nagavpn", "clash": action = "install-config"
+        case "v2rayng": action = "install-sub"
+        case "sing-box": action = "import-remote-profile"
+        default: return nil
+        }
         let host = (components.host ?? "").lowercased()
         let path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
-        guard (host == "install-config" && (path.isEmpty || path == "install-config")) || (host.isEmpty && path == "install-config"),
-              let inner = components.queryItems?.first(where: { $0.name == "url" })?.value,
-              let url = URLComponents(string: inner), url.scheme?.lowercased() == "https", !(url.host ?? "").isEmpty else { return nil }
+        guard (host == action && (path.isEmpty || action == "install-config" && path == action)) ||
+                (host.isEmpty && path == action),
+              let inner = components.queryItems?.first(where: { $0.name == "url" })?.value else { return nil }
+        return httpsTarget(inner)
+    }
+
+    private static func httpsTarget(_ inner: String) -> String? {
+        guard let url = URLComponents(string: inner), url.scheme?.lowercased() == "https",
+              !(url.host ?? "").isEmpty else { return nil }
         return inner
+    }
+
+    public static func inlineConfig(_ raw: String) -> String? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.utf8.count <= 16 * 1_024 * 1_024 else { return nil }
+        let links = #"(?im)^\s*(vless|vmess|ss|ssr|trojan|hysteria|hysteria2|hy2|tuic|olcrtc|awg|wg|wireguard)://"#
+        if text.hasPrefix("{") || text.hasPrefix("[Interface]") ||
+            text.range(of: links, options: .regularExpression) != nil ||
+            text.range(of: #"(?m)^proxies\s*:"#, options: .regularExpression) != nil { return text }
+        guard text.range(of: #"^[A-Za-z0-9_+=/\s-]+$"#, options: .regularExpression) != nil else { return nil }
+        var encoded = String(text.filter { !$0.isWhitespace })
+            .replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        encoded += String(repeating: "=", count: (4 - encoded.count % 4) % 4)
+        guard let data = Data(base64Encoded: encoded), let list = String(data: data, encoding: .utf8),
+              list.range(of: links, options: .regularExpression) != nil else { return nil }
+        return text
     }
 }

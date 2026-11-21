@@ -50,6 +50,7 @@ type Profile struct {
 	Name           string
 	ProviderName   string
 	SourceURL      string
+	ImportFormat   string `json:"import_format,omitempty"`
 	Engine         Engine
 	Config         []byte
 	SelectedMode   string
@@ -693,6 +694,7 @@ func ApplyTrafficMode(config []byte, mode policy.TrafficMode) ([]byte, error) {
 func ensureRuntimeTUNInbound(document map[string]any) {
 	raw, _ := document["inbounds"].([]any)
 	haveTUN := false
+	dualStack := runtime.GOOS == "linux" && linuxIPv6Enabled()
 	for _, item := range raw {
 		inbound, ok := item.(map[string]any)
 		if !ok {
@@ -703,11 +705,18 @@ func ensureRuntimeTUNInbound(document map[string]any) {
 		}
 		haveTUN = true
 		inbound["interface_name"] = RuntimeTUNName
+		if dualStack {
+			ensureTUNIPv6(inbound)
+		}
 	}
 	if haveTUN {
 		return
 	}
-	document["inbounds"] = append([]any{defaultRuntimeTUNInbound()}, raw...)
+	inbound := defaultRuntimeTUNInbound()
+	if dualStack {
+		ensureTUNIPv6(inbound)
+	}
+	document["inbounds"] = append([]any{inbound}, raw...)
 }
 
 func enableLinuxAutoDetectInterface(document map[string]any) {

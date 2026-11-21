@@ -1,6 +1,7 @@
 package subscription
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -15,11 +16,13 @@ import (
 
 	socksproxy "golang.org/x/net/proxy"
 	"naga.network/core/profile"
+	"naga.network/core/profile/sharelink"
 )
 
 const (
-	maxProfileSize = 16 << 20
-	maxRuleSetSize = 8 << 20
+	maxProfileSize   = 16 << 20
+	maxRuleSetSize   = 8 << 20
+	browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
 type Client struct {
@@ -36,10 +39,21 @@ type Snapshot struct {
 	ProviderFAQ    string
 	UpdateInterval time.Duration
 	ContentType    string
+	Import         *sharelink.Summary
 }
 
 func (c Client) Fetch(ctx context.Context, rawURL string) (Snapshot, error) {
 	body, header, err := c.fetchHTTPS(ctx, rawURL, maxProfileSize, "subscription")
+	html := bytes.HasPrefix(bytes.TrimSpace(body), []byte("<"))
+	if c.UserAgent == "" || c.UserAgent == "NagaNetwork/0.1" {
+		if html || err != nil && (err.Error() == "subscription returned HTTP 403" || err.Error() == "subscription returned HTTP 404") {
+			fallback := c
+			fallback.UserAgent = browserUserAgent
+			if otherBody, otherHeader, otherErr := fallback.fetchHTTPS(ctx, rawURL, maxProfileSize, "subscription"); otherErr == nil {
+				body, header, err = otherBody, otherHeader, nil
+			}
+		}
+	}
 	if err != nil {
 		return Snapshot{}, err
 	}

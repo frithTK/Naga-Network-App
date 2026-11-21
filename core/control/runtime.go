@@ -44,6 +44,7 @@ type RuntimeController struct {
 	cacheMu             sync.Mutex
 	cachedSnapshot      RuntimeSnapshot
 	startInProgress     atomic.Bool
+	startStage          atomic.Pointer[string]
 	runtime             engine.Runtime
 	runtimeCancel       context.CancelFunc
 	recoveryContext     context.Context
@@ -143,6 +144,7 @@ type RuntimeSnapshot struct {
 	ActiveLatency     int    `json:"active_latency_ms,omitempty"`
 	ActiveNodeStatus  string `json:"active_node_status,omitempty"`
 	AccessState       string `json:"access_state,omitempty"`
+	Stage             string `json:"stage,omitempty"`
 	FailoverMessage   string `json:"failover_message,omitempty"`
 }
 
@@ -218,11 +220,12 @@ func (c *RuntimeController) Start(profileID string) (snapshot RuntimeSnapshot, r
 	}()
 	finishProbeTransition := c.beginProbeTransition()
 	defer finishProbeTransition()
+	c.setStartStage(&stage, "probe_cleanup")
+	c.startInProgress.Store(true)
+	defer c.startInProgress.Store(false)
 	if err := c.waitProbeCleanup(startContext); err != nil {
 		return c.snapshot(), err
 	}
-	c.startInProgress.Store(true)
-	defer c.startInProgress.Store(false)
 	c.mu.Lock()
 	if err := startContext.Err(); err != nil {
 		c.mu.Unlock()
@@ -247,6 +250,18 @@ func (c *RuntimeController) Start(profileID string) (snapshot RuntimeSnapshot, r
 	c.startContext = nil
 	c.mu.Unlock()
 	return snapshot, resultErr
+}
+
+func (c *RuntimeController) setStartStage(stage *string, value string) {
+	*stage = value
+	c.startStage.Store(&value)
+}
+
+func (c *RuntimeController) currentStartStage() string {
+	if value := c.startStage.Load(); value != nil {
+		return *value
+	}
+	return ""
 }
 
 func (c *RuntimeController) startHoldingLock(
@@ -283,7 +298,7 @@ func (c *RuntimeController) startHoldingLock(
 		return c.snapshotLocked(), err
 	}
 
-	*stage = "load_profile"
+	c.setStartStage(stage, "load_profile")
 	value, err := c.Store.Load(profileID)
 	if err != nil {
 		c.lastError = "profile could not be loaded"
@@ -353,11 +368,13 @@ func candidateProbeGroups(candidates []policy.Candidate, connectionPolicy policy
 	}
 	if connectionPolicy.Mode == policy.ConnectionAuto && len(nonTUIC) > 0 {
 		nonTUIC = policy.RankCandidates(connectionPolicy.NetworkClass, nonTUIC)
-		if len(nonTUIC) > policy.AutoCandidateLimit {
-			nonTUIC = append([]policy.Candidate(nil), nonTUIC[:policy.AutoCandidateLimit]...)
+		primary := min(len(nonTUIC), policy.AutoCandidateLimit)
+		groups = append(groups, nonTUIC[:primary])
+		if primary < len(nonTUIC) {
+			reserve := min(len(nonTUIC), 2*policy.AutoCandidateLimit)
+			groups = append(groups, nonTUIC[primary:reserve])
 		}
-	}
-	if len(nonTUIC) > 0 {
+	} else if len(nonTUIC) > 0 {
 		groups = append(groups, nonTUIC)
 	}
 	if connectionPolicy.TUICFallbackEnabled && len(tuic) > 0 {
@@ -996,15 +1013,18 @@ func (c *RuntimeController) Status() RuntimeSnapshot {
 		c.cacheMu.Lock()
 		snapshot := c.cachedSnapshot
 		c.cacheMu.Unlock()
-		if c.startInProgress.Load() &&
-			snapshot.Status != string(engine.Connected) &&
-			snapshot.Status != string(engine.Starting) {
-			snapshot.Status = string(engine.Starting)
-		}
-		return snapshot
+		return c.withStartProgress(snapshot)
 	}
 	defer c.mu.Unlock()
-	return c.snapshotLocked()
+	return c.withStartProgress(c.snapshotLocked())
+}
+
+func (c *RuntimeController) withStartProgress(snapshot RuntimeSnapshot) RuntimeSnapshot {
+	if c.startInProgress.Load() && snapshot.Status != string(engine.Connected) {
+		snapshot.Status = string(engine.Starting)
+		snapshot.Stage = c.currentStartStage()
+	}
+	return snapshot
 }
 
 func (c *RuntimeController) snapshot() RuntimeSnapshot {
@@ -1138,6 +1158,9 @@ func (c *RuntimeController) snapshotLocked() RuntimeSnapshot {
 				}
 			}
 		}
+	}
+	if snapshot.Status == string(engine.Starting) {
+		snapshot.Stage = c.currentStartStage()
 	}
 	c.cacheMu.Lock()
 	c.cachedSnapshot = snapshot

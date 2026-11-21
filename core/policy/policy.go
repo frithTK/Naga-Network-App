@@ -10,8 +10,8 @@ import (
 
 const (
 	// HealthProbeInterval is how often a connected session re-checks
-	// reachability. Auto mode re-probes up to AutoCandidateLimit non-TUIC
-	// nodes and keeps the fastest; manual modes probe only the active leaf.
+	// reachability. Auto mode checks a primary group and falls back to a
+	// reserve group if needed; manual modes probe only the active leaf.
 	HealthProbeInterval = 45 * time.Second
 	// HealthFailThreshold consecutive probe failures of the active leaf
 	// (manual modes) before the tag is put on cooldown and policy
@@ -24,8 +24,7 @@ const (
 	NetworkPollInterval = 3 * time.Second
 	// NetworkChangeDebounce coalesces interface flaps into one Select.
 	NetworkChangeDebounce = 3 * time.Second
-	// AutoCandidateLimit is how many non-TUIC nodes auto-select probes
-	// in parallel, then enables the fastest of them.
+	// AutoCandidateLimit is the size of each non-TUIC auto-selection batch.
 	AutoCandidateLimit = 3
 )
 

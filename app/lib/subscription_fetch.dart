@@ -51,6 +51,25 @@ class SubscriptionDownload {
 /// naga-control's Go client is a separate path and can be stalled on
 /// networks where this one still connects.
 Future<SubscriptionDownload> downloadSubscription(String rawUrl) async {
+  try {
+    return await _downloadSubscription(rawUrl, 'NagaNetwork/0.1');
+  } on SubscriptionFetchException catch (error) {
+    if (error.message != 'subscription returned HTTP 403' &&
+        error.message != 'subscription returned HTTP 404' &&
+        error.message != 'subscription returned an HTML page') {
+      rethrow;
+    }
+    return _downloadSubscription(
+      rawUrl,
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    );
+  }
+}
+
+Future<SubscriptionDownload> _downloadSubscription(
+  String rawUrl,
+  String userAgent,
+) async {
   final resolved = subscriptionFetchURL(rawUrl);
   if (resolved == null) {
     throw const SubscriptionFetchException(
@@ -65,7 +84,7 @@ Future<SubscriptionDownload> downloadSubscription(String rawUrl) async {
   }
   final client = HttpClient();
   client.connectionTimeout = const Duration(seconds: 20);
-  client.userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  client.userAgent = userAgent;
   try {
     var current = initial;
     for (var hop = 0; hop < 5; hop++) {
@@ -115,8 +134,14 @@ Future<SubscriptionDownload> downloadSubscription(String rawUrl) async {
           );
         }
       }
+      final body = utf8.decode(builder.takeBytes());
+      if (body.trimLeft().startsWith('<')) {
+        throw const SubscriptionFetchException(
+          'subscription returned an HTML page',
+        );
+      }
       return SubscriptionDownload(
-        body: utf8.decode(builder.takeBytes()),
+        body: body,
         url: resolved,
         profileTitle: response.headers.value('profile-title') ?? '',
         subscriptionUserinfo:

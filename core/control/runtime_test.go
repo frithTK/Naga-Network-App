@@ -523,7 +523,7 @@ func TestRuntimeControllerSelectKeepsMergedRuntimeTag(t *testing.T) {
 	}
 }
 
-func TestCandidateProbeGroupsAutoKeepsThreeNonTUIC(t *testing.T) {
+func TestCandidateProbeGroupsAutoUsesReserveBeforeTUIC(t *testing.T) {
 	candidates := []policy.Candidate{
 		{ID: "slow-hy2", Protocol: "Hysteria2", LatencyMS: 80},
 		{ID: "fast-vless", Protocol: "VLESS", LatencyMS: 20},
@@ -537,8 +537,8 @@ func TestCandidateProbeGroupsAutoKeepsThreeNonTUIC(t *testing.T) {
 		NetworkClass:        policy.NetworkWiFi,
 		TUICFallbackEnabled: true,
 	})
-	if len(groups) != 2 {
-		t.Fatalf("groups = %d, want 2", len(groups))
+	if len(groups) != 3 {
+		t.Fatalf("groups = %d, want 3", len(groups))
 	}
 	if len(groups[0]) != policy.AutoCandidateLimit {
 		t.Fatalf("auto group size = %d, want %d", len(groups[0]), policy.AutoCandidateLimit)
@@ -548,8 +548,11 @@ func TestCandidateProbeGroupsAutoKeepsThreeNonTUIC(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("auto group = %v, want %v", got, want)
 	}
-	if len(groups[1]) != 1 || groups[1][0].ID != "tuic" {
-		t.Fatalf("TUIC fallback group = %#v", groups[1])
+	if len(groups[1]) != 2 || groups[1][0].ID != "slow-hy2" || groups[1][1].ID != "slowest-hy2" {
+		t.Fatalf("non-TUIC reserve group = %#v", groups[1])
+	}
+	if len(groups[2]) != 1 || groups[2][0].ID != "tuic" {
+		t.Fatalf("TUIC fallback group = %#v", groups[2])
 	}
 }
 

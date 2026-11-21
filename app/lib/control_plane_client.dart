@@ -24,6 +24,9 @@ class ProfilePreview {
     this.olcrtcAvailable = false,
     this.olcrtcIncomplete = false,
     this.amneziaUnsupported = false,
+    this.importedNodes,
+    this.ignoredNodes = const {},
+    this.proxyOnly = false,
   });
 
   final String? profileId;
@@ -40,9 +43,14 @@ class ProfilePreview {
   final bool olcrtcAvailable;
   final bool olcrtcIncomplete;
   final bool amneziaUnsupported;
+  final int? importedNodes;
+  final Map<String, int> ignoredNodes;
+  final bool proxyOnly;
 
   factory ProfilePreview.fromJson(Map<String, dynamic> json) {
     final rawExpire = json['expire_utc'] as String?;
+    final details = json['import'] as Map<String, dynamic>?;
+    final ignored = details?['ignored'] as Map<String, dynamic>?;
     return ProfilePreview(
       profileId: json['profile_id'] as String?,
       profileTitle: json['profile_title'] as String? ?? 'Naga Network',
@@ -58,6 +66,13 @@ class ProfilePreview {
       olcrtcAvailable: json['olcrtc_available'] as bool? ?? false,
       olcrtcIncomplete: json['olcrtc_incomplete'] as bool? ?? false,
       amneziaUnsupported: json['amnezia_unsupported'] as bool? ?? false,
+      importedNodes: details?['imported'] as int?,
+      ignoredNodes: {
+        for (final entry in (ignored ?? {}).entries)
+          if (entry.value is int && (entry.value as int) > 0)
+            entry.key: entry.value as int,
+      },
+      proxyOnly: details?['proxy_only'] == true,
     );
   }
 }
@@ -450,6 +465,7 @@ class RuntimeSnapshot {
     required this.activeNodeStatus,
     this.failoverMessage,
     this.accessState,
+    this.stage,
   });
 
   final String status;
@@ -470,6 +486,7 @@ class RuntimeSnapshot {
   final String? activeNodeStatus;
   final String? failoverMessage;
   final String? accessState;
+  final String? stage;
 
   factory RuntimeSnapshot.fromJson(Map<String, dynamic> json) {
     return RuntimeSnapshot(
@@ -495,6 +512,7 @@ class RuntimeSnapshot {
       activeNodeStatus: json['active_node_status'] as String?,
       failoverMessage: json['failover_message'] as String?,
       accessState: json['access_state'] as String?,
+      stage: json['stage'] as String?,
     );
   }
 }
@@ -529,6 +547,50 @@ class DiagnosticLogEntry {
   }
 }
 
+class RuntimeConnection {
+  const RuntimeConnection({
+    required this.network,
+    required this.process,
+    required this.destination,
+    required this.rule,
+    required this.chain,
+    required this.uploadBytes,
+    required this.downloadBytes,
+  });
+
+  final String network;
+  final String process;
+  final String destination;
+  final String rule;
+  final List<String> chain;
+  final int uploadBytes;
+  final int downloadBytes;
+
+  factory RuntimeConnection.fromJson(Map<String, dynamic> json) =>
+      RuntimeConnection(
+        network: json['network'] as String? ?? '',
+        process: json['process'] as String? ?? '',
+        destination: json['destination'] as String? ?? '',
+        rule: json['rule'] as String? ?? '',
+        chain:
+            (json['chain'] as List?)?.whereType<String>().toList() ?? const [],
+        uploadBytes: _jsonInt(json['upload_bytes']),
+        downloadBytes: _jsonInt(json['download_bytes']),
+      );
+}
+
+class RuntimeConnections {
+  const RuntimeConnections({
+    this.available = false,
+    this.total = 0,
+    this.rows = const [],
+  });
+
+  final bool available;
+  final int total;
+  final List<RuntimeConnection> rows;
+}
+
 class ControlHealth {
   const ControlHealth({
     required this.ok,
@@ -536,6 +598,7 @@ class ControlHealth {
     this.runtimeReady = false,
     this.olcrtcReady = false,
     this.nodeProbeJobs = false,
+    this.liveProfileImport = false,
   });
 
   final bool ok;
@@ -543,18 +606,18 @@ class ControlHealth {
   final bool runtimeReady;
   final bool olcrtcReady;
   final bool nodeProbeJobs;
+  final bool liveProfileImport;
 
   factory ControlHealth.fromJson(Map<String, dynamic> json) {
     try {
+      final capabilities = json['capabilities'] as Map<String, dynamic>?;
       return ControlHealth(
         ok: json['status'] == 'ok',
         version: json['version'] as String? ?? '',
         runtimeReady: json['runtime_ready'] as bool? ?? false,
         olcrtcReady: json['olcrtc_ready'] as bool? ?? false,
-        nodeProbeJobs:
-            (json['capabilities']
-                as Map<String, dynamic>?)?['node_probe_jobs'] ==
-            true,
+        nodeProbeJobs: capabilities?['node_probe_jobs'] == true,
+        liveProfileImport: capabilities?['live_profile_import'] == true,
       );
     } catch (_) {
       throw const ControlPlaneException(
@@ -655,6 +718,10 @@ class ControlPlaneException implements Exception {
 }
 
 class ControlPlaneClient {
+  // Configuration changes can wait for a connection attempt and can also
+  // trigger node checks or a reconnect before the service confirms the result.
+  static const _connectionChangeTimeout = Duration(seconds: 90);
+
   ControlPlaneClient({
     String baseUrl = const String.fromEnvironment(
       'NAGA_CONTROL_URL',
@@ -797,6 +864,7 @@ class ControlPlaneClient {
     final payload = await _postPath(
       '/v1/profiles/${Uri.encodeComponent(profileId)}/mode',
       {'mode': mode},
+      timeout: _connectionChangeTimeout,
     );
     return ProfileNodes.fromJson(payload);
   }
@@ -891,6 +959,20 @@ class ControlPlaneClient {
     return RuntimeSnapshot.fromJson(payload);
   }
 
+  Future<RuntimeConnections> runtimeConnections() async {
+    final payload = await _getJson('/v1/runtime/connections');
+    return RuntimeConnections(
+      available: payload['available'] == true,
+      total: _jsonInt(payload['total']),
+      rows:
+          (payload['connections'] as List?)
+              ?.whereType<Map<String, dynamic>>()
+              .map(RuntimeConnection.fromJson)
+              .toList() ??
+          const [],
+    );
+  }
+
   Future<bool> health() async {
     return (await healthInfo()).ok;
   }
@@ -965,12 +1047,14 @@ class ControlPlaneClient {
     final payload = await _runtimePost('/v1/runtime/select', {
       if (profileId != null && profileId.isNotEmpty) 'profile_id': profileId,
       'outbound': outbound,
-    });
+    }, timeout: _connectionChangeTimeout);
     return RuntimeSnapshot.fromJson(payload);
   }
 
   Future<RuntimeSnapshot> selectRuntimeAuto() async {
-    final payload = await _runtimePost('/v1/runtime/select', {'auto': true});
+    final payload = await _runtimePost('/v1/runtime/select', {
+      'auto': true,
+    }, timeout: _connectionChangeTimeout);
     return RuntimeSnapshot.fromJson(payload);
   }
 
@@ -1102,7 +1186,11 @@ class ControlPlaneClient {
 
   Future<ConnectionPolicy> saveConnectionPolicy(ConnectionPolicy policy) async {
     return ConnectionPolicy.fromJson(
-      await _putJson('/v1/policy', policy.toJson()),
+      await _putJson(
+        '/v1/policy',
+        policy.toJson(),
+        timeout: _connectionChangeTimeout,
+      ),
     );
   }
 
@@ -1112,7 +1200,11 @@ class ControlPlaneClient {
 
   Future<RoutingPolicy> saveRoutingPolicy(RoutingPolicy policy) async {
     return RoutingPolicy.fromJson(
-      await _putJson('/v1/routing', policy.toJson()),
+      await _putJson(
+        '/v1/routing',
+        policy.toJson(),
+        timeout: _connectionChangeTimeout,
+      ),
     );
   }
 
@@ -1173,8 +1265,9 @@ class ControlPlaneClient {
 
   Future<Map<String, dynamic>> _runtimePost(
     String path,
-    Map<String, dynamic>? body,
-  ) async {
+    Map<String, dynamic>? body, {
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
     late http.Response response;
     try {
       response = await _client
@@ -1183,7 +1276,11 @@ class ControlPlaneClient {
             headers: _headers(const {'Content-Type': 'application/json'}),
             body: body == null ? null : jsonEncode(body),
           )
-          .timeout(const Duration(seconds: 20));
+          .timeout(timeout);
+    } on TimeoutException {
+      throw const ControlPlaneException(
+        'Сервис не успел подтвердить операцию. Проверьте текущее состояние VPN.',
+      );
     } catch (_) {
       throw const ControlPlaneException(
         'Не удалось связаться с локальным control-plane.',
@@ -1194,8 +1291,9 @@ class ControlPlaneClient {
 
   Future<Map<String, dynamic>> _putJson(
     String path,
-    Map<String, dynamic> body,
-  ) async {
+    Map<String, dynamic> body, {
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
     late http.Response response;
     try {
       response = await _client
@@ -1204,7 +1302,11 @@ class ControlPlaneClient {
             headers: _headers(const {'Content-Type': 'application/json'}),
             body: jsonEncode(body),
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(timeout);
+    } on TimeoutException {
+      throw const ControlPlaneException(
+        'Сервис не успел подтвердить изменение настроек. Проверьте текущие настройки VPN.',
+      );
     } catch (_) {
       throw const ControlPlaneException(
         'Не удалось связаться с локальным control-plane.',
@@ -1215,8 +1317,9 @@ class ControlPlaneClient {
 
   Future<Map<String, dynamic>> _postPath(
     String path,
-    Map<String, dynamic> body,
-  ) async {
+    Map<String, dynamic> body, {
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
     late http.Response response;
     try {
       response = await _client
@@ -1225,7 +1328,11 @@ class ControlPlaneClient {
             headers: _headers(const {'Content-Type': 'application/json'}),
             body: jsonEncode(body),
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(timeout);
+    } on TimeoutException {
+      throw const ControlPlaneException(
+        'Сервис не успел подтвердить операцию. Проверьте текущее состояние VPN.',
+      );
     } catch (_) {
       throw const ControlPlaneException(
         'Не удалось связаться с локальным control-plane.',

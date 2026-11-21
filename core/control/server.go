@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"naga.network/core/profile"
 	awgcfg "naga.network/core/profile/amneziawg"
 	"naga.network/core/profile/olcrtc"
+	"naga.network/core/profile/sharelink"
 	"naga.network/core/storage"
 	"naga.network/core/subscription"
 	"naga.network/core/version"
@@ -93,19 +95,20 @@ type modeRequest struct {
 }
 
 type Preview struct {
-	ProfileTitle          string `json:"profile_title"`
-	ProviderName          string `json:"provider_name,omitempty"`
-	Engine                string `json:"engine"`
-	UploadBytes           int64  `json:"upload_bytes"`
-	DownloadBytes         int64  `json:"download_bytes"`
-	TotalBytes            int64  `json:"total_bytes"`
-	Unlimited             bool   `json:"unlimited"`
-	ExpireUTC             string `json:"expire_utc,omitempty"`
-	UpdateIntervalSeconds int64  `json:"update_interval_seconds"`
-	CanConnect            bool   `json:"can_connect"`
-	OlcRTCAvailable       bool   `json:"olcrtc_available"`
-	OlcRTCIncomplete      bool   `json:"olcrtc_incomplete,omitempty"`
-	AmneziaUnsupported    bool   `json:"amnezia_unsupported,omitempty"`
+	ProfileTitle          string             `json:"profile_title"`
+	ProviderName          string             `json:"provider_name,omitempty"`
+	Engine                string             `json:"engine"`
+	UploadBytes           int64              `json:"upload_bytes"`
+	DownloadBytes         int64              `json:"download_bytes"`
+	TotalBytes            int64              `json:"total_bytes"`
+	Unlimited             bool               `json:"unlimited"`
+	ExpireUTC             string             `json:"expire_utc,omitempty"`
+	UpdateIntervalSeconds int64              `json:"update_interval_seconds"`
+	CanConnect            bool               `json:"can_connect"`
+	OlcRTCAvailable       bool               `json:"olcrtc_available"`
+	OlcRTCIncomplete      bool               `json:"olcrtc_incomplete,omitempty"`
+	AmneziaUnsupported    bool               `json:"amnezia_unsupported,omitempty"`
+	Import                *sharelink.Summary `json:"import,omitempty"`
 }
 
 type errorResponse struct {
@@ -266,7 +269,8 @@ func (s Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			RuntimeReady: s.RuntimeReady,
 			OlcRTCReady:  s.OlcRTCReady,
 			Capabilities: map[string]bool{"node_probe_jobs": s.Runtime != nil,
-				"vpn_connect": s.ConnectionUnavailableReason == "" && s.RuntimeReady},
+				"live_profile_import": true,
+				"vpn_connect":         s.ConnectionUnavailableReason == "" && s.RuntimeReady},
 			ConnectionUnavailableReason: s.ConnectionUnavailableReason,
 		})
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/diagnostics/logs":
@@ -319,6 +323,8 @@ func (s Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.runtimeStatus(w)
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/runtime/inspect":
 		s.runtimeInspect(w)
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/runtime/connections":
+		s.runtimeConnections(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/runtime/start":
 		s.runtimeStart(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/runtime/select":
@@ -815,6 +821,11 @@ func (s Server) refreshProfile(w http.ResponseWriter, r *http.Request, profileID
 			return
 		}
 	}
+	s.saveRefreshedProfile(w, value, snapshot)
+}
+
+func (s Server) saveRefreshedProfile(w http.ResponseWriter, value profile.Profile, snapshot subscription.Snapshot) {
+	profileID := value.ID
 	// Do not discard an explicitly selected room or restart an active olcRTC
 	// session from a partial subscription. The previous stored profile remains
 	// usable until the subscription is complete or the user selects another node.
@@ -844,6 +855,14 @@ func (s Server) refreshProfile(w http.ResponseWriter, r *http.Request, profileID
 		}
 		value.SelectedMode = mapped
 	}
+	if value.ImportFormat != "" && value.SelectedMode != "" {
+		mapped, ok := sharelink.RemapSelection(value.Config, snapshot.Config, value.SelectedMode)
+		if !ok {
+			writeError(w, http.StatusUnprocessableEntity, "выбранный узел отсутствует в обновлённой подписке")
+			return
+		}
+		value.SelectedMode = mapped
+	}
 	now := time.Now
 	if s.Now != nil {
 		now = s.Now
@@ -852,6 +871,10 @@ func (s Server) refreshProfile(w http.ResponseWriter, r *http.Request, profileID
 	value.ProviderName = snapshot.ProviderName
 	value.Engine = snapshotEngine(snapshot)
 	value.Config = snapshot.Config
+	value.ImportFormat = ""
+	if snapshot.Import != nil {
+		value.ImportFormat = snapshot.Import.Format
+	}
 	value.Subscription = snapshot.Subscription
 	value.UpdateInterval = snapshot.UpdateInterval
 	value.ImportedAt = now().UTC()
@@ -869,7 +892,7 @@ func (s Server) refreshProfile(w http.ResponseWriter, r *http.Request, profileID
 	if value.SelectedMode == olcrtc.NodeTag && !olcrtcAvailable(value.Config) {
 		value.SelectedMode = ""
 	}
-	if s.Runtime != nil {
+	if s.Runtime != nil && s.Runtime.IsActive(profileID) {
 		if _, err := s.Runtime.ReplaceProfile(value); err != nil {
 			writeError(w, http.StatusConflict, safeRuntimeError(err))
 			return
@@ -1100,12 +1123,6 @@ func (s Server) importProfile(w http.ResponseWriter, r *http.Request) {
 		writeImportSnapshotError(w, err)
 		return
 	}
-	if s.Runtime != nil && s.Runtime.IsRunning() {
-		if _, err := s.Runtime.Stop(); err != nil {
-			writeError(w, http.StatusConflict, "disconnect before importing a profile")
-			return
-		}
-	}
 	now := time.Now
 	if s.Now != nil {
 		now = s.Now
@@ -1113,6 +1130,17 @@ func (s Server) importProfile(w http.ResponseWriter, r *http.Request) {
 	id := profile.IDFromConfig(snapshot.Config)
 	if sourceURL != "" {
 		id = profile.IDFromSourceURL(sourceURL)
+	}
+	if previous, err := s.Storage.Load(id); err == nil {
+		if sourceURL != "" {
+			s.saveRefreshedProfile(w, previous, snapshot)
+		} else {
+			writeJSON(w, http.StatusOK, importResponse{ProfileID: id, Preview: s.previewFor(snapshot)})
+		}
+		return
+	} else if !errors.Is(err, os.ErrNotExist) {
+		writeError(w, http.StatusInternalServerError, "stored profile could not be loaded")
+		return
 	}
 	value := profile.Profile{
 		ID:             id,
@@ -1125,6 +1153,9 @@ func (s Server) importProfile(w http.ResponseWriter, r *http.Request) {
 		Subscription:   snapshot.Subscription,
 		UpdateInterval: snapshot.UpdateInterval,
 		ImportedAt:     now().UTC(),
+	}
+	if snapshot.Import != nil {
+		value.ImportFormat = snapshot.Import.Format
 	}
 	if err := s.Storage.Save(value); err != nil {
 		writeError(w, http.StatusInternalServerError, "profile could not be saved")
@@ -1621,12 +1652,55 @@ func profileTitleFromFileName(name string) string {
 func (s Server) validateSnapshot(r *http.Request, snapshot subscription.Snapshot) (subscription.Snapshot, error) {
 	original := snapshot.Config
 	snapshot.Config = profile.ParsingBytes(original)
+	trim := bytes.TrimSpace(snapshot.Config)
+	if len(trim) > 0 && trim[0] == '<' {
+		return subscription.Snapshot{}, errors.New("subscription returned an HTML page")
+	}
+	clash, recognized, err := sharelink.ParseClash(snapshot.Config)
+	if err != nil {
+		return subscription.Snapshot{}, err
+	}
+	if recognized {
+		return s.validateLinkSnapshot(r, snapshot, clash)
+	}
+	if !olcrtc.IsDocument(snapshot.Config) {
+		result, recognized, err := sharelink.Parse(snapshot.Config)
+		if err != nil {
+			return subscription.Snapshot{}, err
+		}
+		if recognized {
+			return s.validateLinkSnapshot(r, snapshot, result)
+		}
+	}
 	validated, err := s.validateParsingSnapshot(r, snapshot)
 	if err != nil {
 		return subscription.Snapshot{}, err
 	}
 	validated.Config = append([]byte(nil), original...)
 	return validated, nil
+}
+
+func (s Server) validateLinkSnapshot(r *http.Request, snapshot subscription.Snapshot, result sharelink.Result) (subscription.Snapshot, error) {
+	config, err := result.Config()
+	if err != nil {
+		return subscription.Snapshot{}, err
+	}
+	snapshot.Config = config
+	snapshot.Import = &result.Summary
+	validated, err := s.validateParsingSnapshot(r, snapshot)
+	if err != nil && s.Validator != nil && result.Summary.Imported != 0 {
+		// An installed service may be configured with stock sing-box. Filter the
+		// exact unsupported fingerprint rather than substituting another one.
+		compatible := result.WithoutChrome120()
+		if compatible.Summary.Imported < result.Summary.Imported {
+			if config, cfgErr := compatible.Config(); cfgErr == nil {
+				snapshot.Config = config
+				snapshot.Import = &compatible.Summary
+				return s.validateParsingSnapshot(r, snapshot)
+			}
+		}
+	}
+	return validated, err
 }
 
 func (s Server) validateParsingSnapshot(r *http.Request, snapshot subscription.Snapshot) (subscription.Snapshot, error) {
@@ -1812,6 +1886,7 @@ func (s Server) previewFor(snapshot subscription.Snapshot) Preview {
 		OlcRTCAvailable:       olcrtcAvailable(snapshot.Config),
 		OlcRTCIncomplete:      olcRTCIncomplete(snapshot.Config),
 		AmneziaUnsupported:    amneziaRuntimeUnsupported(snapshot.Config),
+		Import:                snapshot.Import,
 	}
 	if !snapshot.Subscription.Expire.IsZero() {
 		preview.ExpireUTC = snapshot.Subscription.Expire.UTC().Format(time.RFC3339)
@@ -1869,6 +1944,11 @@ func safeFetchError(err error) string {
 	case strings.Contains(message, "subscription URL"):
 		return "subscription URL must use HTTPS"
 	case strings.Contains(message, "subscription returned HTTP"):
+		return message
+	case message == "subscription returned an HTML page" ||
+		message == "subscription has too many proxy links" ||
+		message == "subscription contains invalid Clash YAML" ||
+		message == "subscription contains no compatible proxy nodes":
 		return message
 	case strings.Contains(message, "profile-title") ||
 		strings.Contains(message, "profile-update-interval") ||

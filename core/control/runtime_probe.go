@@ -806,11 +806,15 @@ func (c *RuntimeController) persistObservedNetworkClass(next policy.NetworkClass
 // trigger a reselect. TUN is never torn down. A connected session re-runs
 // the same auto/manual probe groups as a periodic health tick.
 func (c *RuntimeController) OnNetworkClass(next policy.NetworkClass) (RuntimeSnapshot, error) {
+	return c.OnNetworkChange(next, false)
+}
+
+func (c *RuntimeController) OnNetworkChange(next policy.NetworkClass, identityChanged bool) (RuntimeSnapshot, error) {
 	if next == policy.NetworkUnknown {
 		return c.Status(), nil
 	}
 	c.mu.Lock()
-	if c.lastObservedClass == next {
+	if c.lastObservedClass == next && !identityChanged {
 		snap := c.snapshotLocked()
 		c.mu.Unlock()
 		return snap, nil
@@ -820,12 +824,14 @@ func (c *RuntimeController) OnNetworkClass(next policy.NetworkClass) (RuntimeSna
 	running := c.runtime != nil && c.IsRuntimeActiveLocked()
 	c.mu.Unlock()
 
-	c.persistObservedNetworkClass(next)
+	if previous != next {
+		c.persistObservedNetworkClass(next)
+	}
 	if !running {
 		return c.Status(), nil
 	}
 	if c.Journal != nil {
-		c.Journal.Info("runtime", "network_class_changed", "Класс сети изменился, выбираем узел заново", map[string]any{
+		c.Journal.Info("runtime", "network_class_changed", "Подключение к сети изменилось, проверяем узел", map[string]any{
 			"from": string(previous),
 			"to":   string(next),
 		})

@@ -66,6 +66,25 @@ func TestFetchAcceptsPlainTextWithoutUserinfo(t *testing.T) {
 	}
 }
 
+func TestFetchRetriesOneAlternateUserAgentAfter404(t *testing.T) {
+	var agents []string
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		agents = append(agents, req.UserAgent())
+		status := http.StatusNotFound
+		if req.UserAgent() == browserUserAgent {
+			status = http.StatusOK
+		}
+		return &http.Response{StatusCode: status, Header: make(http.Header),
+			Body:    io.NopCloser(strings.NewReader("hy2://test@example.invalid:443")),
+			Request: req}, nil
+	})
+	result, err := (Client{HTTPClient: &http.Client{Transport: transport}}).Fetch(context.Background(), "https://example.invalid/profile")
+	if err != nil || len(agents) != 2 || agents[0] != "NagaNetwork/0.1" || agents[1] != browserUserAgent ||
+		!strings.HasPrefix(string(result.Config), "hy2://") {
+		t.Fatalf("fallback: %v, attempts %d", err, len(agents))
+	}
+}
+
 func TestFetchRejectsMalformedUserinfo(t *testing.T) {
 	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		headers := make(http.Header)

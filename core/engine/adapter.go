@@ -50,6 +50,26 @@ type Runtime interface {
 	Stats() TrafficStats
 }
 
+type Connection struct {
+	Network     string   `json:"network"`
+	Process     string   `json:"process,omitempty"`
+	Destination string   `json:"destination,omitempty"`
+	Rule        string   `json:"rule,omitempty"`
+	Chain       []string `json:"chain,omitempty"`
+	Upload      int64    `json:"upload_bytes"`
+	Download    int64    `json:"download_bytes"`
+}
+
+type ConnectionSnapshot struct {
+	Available bool         `json:"available"`
+	Total     int          `json:"total"`
+	Rows      []Connection `json:"connections"`
+}
+
+type ConnectionReporter interface {
+	Connections(context.Context) (ConnectionSnapshot, error)
+}
+
 // FailureReporter is implemented by runtimes that can expose an unexpected
 // process exit to the control-plane without changing the common adapter API.
 type FailureReporter interface {

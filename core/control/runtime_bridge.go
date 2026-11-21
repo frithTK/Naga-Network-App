@@ -14,6 +14,13 @@ type bridgeRuntime struct {
 	bridge *androidvpn.Bridge
 }
 
+func (r *bridgeRuntime) Connections(ctx context.Context) (engine.ConnectionSnapshot, error) {
+	if reporter, ok := r.Runtime.(engine.ConnectionReporter); ok {
+		return reporter.Connections(ctx)
+	}
+	return engine.ConnectionSnapshot{}, nil
+}
+
 func (r *bridgeRuntime) Status() engine.Status {
 	if r.bridge != nil && r.bridge.Failure() != nil {
 		return engine.Failed

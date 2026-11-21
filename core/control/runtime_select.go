@@ -19,7 +19,7 @@ type groupProbeOutcome struct {
 	selected *candidateProbeResult
 }
 
-const awgSelectionWindow = 350 * time.Millisecond
+const selectionWindow = 350 * time.Millisecond
 
 // probeCandidateGroups keeps "connected" honest: the local process and Clash
 // API must be ready, and a leaf outbound must also complete an HTTP
@@ -63,13 +63,9 @@ func probeCandidateGroups(
 		}
 		groupContext, cancelGroup := context.WithCancel(parent)
 		results := make(chan candidateProbeResult, len(group))
-		earlySelection := false
 		awgSlots := make(chan struct{}, 4)
 		for _, candidate := range group {
 			candidate := candidate
-			if _, ok := awgProbers[candidate.RuntimeTag].(*deferredAWG); ok {
-				earlySelection = true
-			}
 			go func() {
 				startedAt := time.Now()
 				nodeTimeout := probeTimeoutFor(candidate, timeout)
@@ -136,8 +132,8 @@ func probeCandidateGroups(
 				copy := result
 				selected = &copy
 			}
-			if earlySelection && selectionTimer == nil {
-				selectionTimer = time.NewTimer(awgSelectionWindow)
+			if selectionTimer == nil {
+				selectionTimer = time.NewTimer(selectionWindow)
 				selectionDeadline = selectionTimer.C
 			}
 		}

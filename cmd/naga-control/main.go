@@ -153,13 +153,12 @@ func main() {
 	watchCtx, watchCancel := context.WithCancel(context.Background())
 	defer watchCancel()
 	go network.Watcher{
-		Class: func(ctx context.Context) policy.NetworkClass {
-			return network.LinuxClass(ctx)
-		},
-		OnChange: func(_, to policy.NetworkClass) {
-			if _, err := runtime.OnNetworkClass(to); err != nil && journal != nil {
+		Observe: network.LinuxObservation,
+		OnObservation: func(from, to network.Observation) {
+			identityChanged := from.ID != "" && to.ID != "" && from.ID != to.ID
+			if _, err := runtime.OnNetworkChange(to.Class, identityChanged); err != nil && journal != nil {
 				journal.Warn("runtime", "network_reselect_failed", err.Error(), map[string]any{
-					"network_class": string(to),
+					"network_class": string(to.Class),
 				})
 			}
 		},

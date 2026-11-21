@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -94,6 +96,24 @@ void main() {
     expect(health.ok, isTrue);
     expect(health.version, '1.2.4');
     expect(health.runtimeReady, isTrue);
+  });
+
+  test('policy timeout reports that the change is unconfirmed', () async {
+    final client = ControlPlaneClient(
+      client: MockClient((_) async => throw TimeoutException('timeout')),
+    );
+    addTearDown(client.close);
+
+    await expectLater(
+      client.saveConnectionPolicy(ConnectionPolicy.fromJson({})),
+      throwsA(
+        isA<ControlPlaneException>().having(
+          (error) => error.message,
+          'message',
+          startsWith('Сервис не успел подтвердить изменение настроек.'),
+        ),
+      ),
+    );
   });
 
   test(

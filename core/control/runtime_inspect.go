@@ -1,11 +1,41 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"time"
 
 	"naga.network/core/engine"
 )
+
+func (s Server) runtimeConnections(w http.ResponseWriter, r *http.Request) {
+	if s.Runtime == nil || !s.Runtime.mu.TryLock() {
+		writeJSON(w, http.StatusOK, engine.ConnectionSnapshot{})
+		return
+	}
+	runtime := s.Runtime.runtime
+	reporter, available := runtime.(engine.ConnectionReporter)
+	available = available && !s.Runtime.startingOverlay && s.Runtime.IsRuntimeActiveLocked()
+	s.Runtime.mu.Unlock()
+	if !available {
+		writeJSON(w, http.StatusOK, engine.ConnectionSnapshot{})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	result, err := reporter.Connections(ctx)
+	if err != nil || !s.Runtime.mu.TryLock() {
+		writeJSON(w, http.StatusOK, engine.ConnectionSnapshot{})
+		return
+	}
+	if runtime != s.Runtime.runtime || !s.Runtime.IsRuntimeActiveLocked() {
+		result = engine.ConnectionSnapshot{}
+	}
+	s.Runtime.mu.Unlock()
+	writeJSON(w, http.StatusOK, result)
+}
 
 // RuntimeInspect is a secret-free summary of the runtime config that was
 // handed to Adapter.Start. It does not reflect sing-box NormalizeLinuxConfig
